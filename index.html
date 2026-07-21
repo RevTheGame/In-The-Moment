@@ -14,12 +14,15 @@
     <main class="app-shell">
       <header class="topbar">
         <a href="#home" class="brand" aria-label="In The Moment home">in the <em>moment</em></a>
-        <button class="icon-button settings-cog" id="settingsButton" aria-label="Open settings">⚙︎</button>
+        <div class="topbar-actions">
+          <button class="icon-button theme-toggle" id="themeToggle" type="button" aria-label="Switch to dark mode" aria-pressed="false"><span aria-hidden="true">☾</span></button>
+          <button class="icon-button settings-cog" id="settingsButton" type="button" aria-label="Open settings">⚙︎</button>
+        </div>
       </header>
 
       <section class="home-screen screen active" id="home">
-        <div class="build-stamp">BUILD af93a05</div>
-        <div class="eyebrow" id="todayDate"></div>
+        <div class="build-stamp">BUILD 2026.07.21-DARK</div>
+        <time class="home-date" id="todayDate" aria-label="Today’s date"><span id="todayWeekday"></span><strong id="todayMonthDay"></strong></time>
         <h1>Make an ordinary<br>moment <i>iconic.</i></h1>
         <p class="intro">Today’s tiny missions are waiting for the perfect opening. Capture the real thing.</p>
 
@@ -39,7 +42,7 @@
         <h2 id="challengeTitle">The coffee entrance</h2>
         <p class="challenge-prompt" id="challengePrompt"></p>
         <button class="primary-button" id="startMoment">I'm ready for a moment <span>→</span></button>
-        <p class="footnote">You’ll have a chance to review before saving.</p>
+        <p class="footnote">Your moment saves straight to today’s reel when you finish recording.</p>
       </section>
 
       <section class="record-screen screen" id="record">
@@ -54,19 +57,10 @@
         <div class="record-controls">
           <p id="recordInstruction">Frame the moment, then press record.</p>
           <button class="sound-trigger" id="soundTrigger" disabled><span class="sound-burst">✦</span><span>Start recording to unlock sound</span></button>
-          <button class="record-button" id="recordButton" aria-label="Start recording"><i></i></button>
+          <button class="record-button" id="recordButton" type="button" aria-label="Start recording"></button>
           <span class="record-label" id="recordLabel">TAP TO RECORD</span>
         </div>
         <button class="flip-camera" id="flipCamera" aria-label="Flip camera">↻︎</button>
-      </section>
-
-      <section class="review-screen screen" id="review">
-        <div class="eyebrow">NICE TIMING</div>
-        <h2>That was a<br><i>moment.</i></h2>
-        <div class="review-video-wrap"><video id="reviewVideo" controls playsinline></video><div class="video-placeholder" id="reviewPlaceholder">YOUR<br>MOMENT</div><span class="duration-pill" id="clipDuration">00:08</span></div>
-        <p class="review-note">Your clip is ready for today’s reel.</p>
-        <button class="primary-button" id="saveMoment">Add to my reel <span>→</span></button>
-        <button class="text-button" id="redoMoment">Try that again</button>
       </section>
 
       <section class="reel-screen screen" id="reel">
