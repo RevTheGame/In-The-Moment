@@ -173,10 +173,11 @@ async function exportVerticalReel() {
   try { exportRecorder = mimeType ? new MediaRecorder(output, { mimeType }) : new MediaRecorder(output); exportJob.recorder = exportRecorder; } catch (error) { $('#exportStatus').textContent = 'Export is not supported in this browser.'; exportJob = null; setExporting(false); show('#reel'); return toast('This browser cannot create a video export.'); }
   const finished = new Promise(resolve => { exportRecorder.onstop = () => resolve(new Blob(parts, { type: exportRecorder.mimeType })); });
   exportRecorder.ondataavailable = event => { if (event.data.size) parts.push(event.data); }; exportRecorder.start();
-  const items = await Promise.all(clips.map(async clip => { const video = document.createElement('video'), url = URL.createObjectURL(clip.blob); video.src = url; video.playsInline = true; video.muted = false; video.volume = 1; video.preload = 'auto'; await new Promise((resolve, reject) => { video.oncanplay = resolve; video.onerror = reject; }); const source = exportAudioContext.createMediaElementSource(video), gain = exportAudioContext.createGain(); source.connect(gain).connect(audioDestination); return { clip, video, url, gain }; }));
+  const prepareExportItem = async clip => { const video = document.createElement('video'), url = URL.createObjectURL(clip.blob); video.src = url; video.playsInline = true; video.muted = false; video.volume = 1; video.preload = 'auto'; if (isMobileSafari) { video.className = 'export-video-stage'; document.body.append(video); } await new Promise((resolve, reject) => { video.oncanplay = resolve; video.onerror = reject; }); const source = exportAudioContext.createMediaElementSource(video), gain = exportAudioContext.createGain(); source.connect(gain).connect(audioDestination); return { clip, video, url, gain }; };
+  const items = isMobileSafari ? [] : await Promise.all(clips.map(prepareExportItem));
   const transitionDuration = isMobileSafari ? 0 : .35; setExportProgress(5);
-  for (let index = 0; index < items.length && !exportJob.cancelled; index += 1) {
-    const item = items[index], next = items[index + 1]; let nextStarted = false, frame;
+  for (let index = 0; index < clips.length && !exportJob.cancelled; index += 1) {
+    const item = isMobileSafari ? await prepareExportItem(clips[index]) : items[index], next = isMobileSafari ? undefined : items[index + 1]; if (isMobileSafari) items.push(item); let nextStarted = false, frame;
     item.gain.gain.value = 1; if (!item.video.currentTime) await item.video.play();
     await new Promise(resolve => { const render = () => {
       const remaining = Math.max(0, item.video.duration - item.video.currentTime), progress = nextStarted ? Math.min(1, 1 - remaining / transitionDuration) : 0;
@@ -187,8 +188,9 @@ async function exportVerticalReel() {
       if (nextStarted) drawExportFrame(context, canvas, next.video, next.clip, progress, false);
       if (exportJob.cancelled || item.video.ended) { cancelAnimationFrame(frame); resolve(); } else frame = requestAnimationFrame(render);
     }; render(); });
+    if (isMobileSafari) { item.gain.disconnect(); item.video.remove(); URL.revokeObjectURL(item.url); items.pop(); }
   }
-  items.forEach(item => { item.gain.disconnect(); URL.revokeObjectURL(item.url); });
+  items.forEach(item => { item.gain.disconnect(); item.video.remove(); URL.revokeObjectURL(item.url); });
   if (exportJob.cancelled) { if (exportRecorder.state === 'recording') exportRecorder.stop(); await finished; await exportAudioContext.close(); exportJob = null; return; }
   exportRecorder.stop(); const reel = await finished; await exportAudioContext.close();
   const extension = reel.type.includes('mp4') ? 'mp4' : 'webm', link = document.createElement('a'); link.href = URL.createObjectURL(reel); link.download = `in-the-moment-reel.${extension}`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
