@@ -100,9 +100,7 @@ Several design decisions were made with the assistance of GPT-5.6 and implemente
 * Additional challenge packs
 * More sound effects
 * Sharing recorded moments
-* Custom community-created challenges
 * Achievement tracking
-* Multiplayer challenge sessions
 
 ---
 
