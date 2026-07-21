@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#111111" />
+    <title>In The Moment</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=DM+Mono:wght@400;500&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Playfair+Display:ital,wght@0,600;0,700;1,600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <a href="#home" class="brand" aria-label="In The Moment home">in the <em>moment</em></a>
+        <button class="icon-button" id="settingsButton" aria-label="Open settings"><span></span><span></span><span></span></button>
+      </header>
+
+      <section class="home-screen screen active" id="home">
+        <div class="eyebrow">TUESDAY, JULY 14</div>
+        <h1>Make an ordinary<br>moment <i>iconic.</i></h1>
+        <p class="intro">Today’s tiny missions are waiting for the perfect opening. Capture the real thing.</p>
+
+        <div class="progress-row"><span><b id="completeCount">0</b> of 3 moments found</span><div class="progress-track"><i id="progressFill"></i></div></div>
+
+        <div class="challenge-list" id="challengeList"></div>
+        <button class="primary-button compilation-button" id="compilationButton" disabled>
+          <span class="button-plus">+</span> Make my moment reel
+        </button>
+      </section>
+
+      <section class="challenge-screen screen" id="challenge">
+        <button class="back-button" id="backButton">← Back to today</button>
+        <div class="sound-orb" id="soundOrb"><span id="orbEmoji">☕</span></div>
+        <div class="eyebrow" id="challengeNumber">MOMENT 01</div>
+        <h2 id="challengeTitle">The coffee entrance</h2>
+        <p class="challenge-prompt" id="challengePrompt"></p>
+        <button class="primary-button" id="startMoment">I'm ready for a moment <span>→</span></button>
+        <p class="footnote">You’ll have a chance to review before saving.</p>
+      </section>
+
+      <section class="record-screen screen" id="record">
+        <video id="cameraPreview" playsinline muted autoplay></video>
+        <div class="camera-fallback" id="cameraFallback"><div>camera<br>ready</div></div>
+        <div class="record-hud">
+          <button class="close-record" id="cancelRecord" aria-label="Cancel recording">×</button>
+          <div class="recording-status"><span class="record-dot"></span><span id="timer">00:00</span></div>
+          <div class="moment-chip" id="recordingTitle">THE COFFEE ENTRANCE</div>
+          <p class="recording-guidance" id="recordingGuidance"></p>
+        </div>
+        <div class="record-controls">
+          <p id="recordInstruction">Frame the moment, then press record.</p>
+          <button class="sound-trigger" id="soundTrigger" disabled><span class="sound-burst">✦</span><span>Start recording to unlock sound</span></button>
+          <button class="record-button" id="recordButton" aria-label="Start recording"><i></i></button>
+          <span class="record-label" id="recordLabel">TAP TO RECORD</span>
+        </div>
+        <button class="flip-camera" id="flipCamera" aria-label="Flip camera">↻</button>
+      </section>
+
+      <section class="review-screen screen" id="review">
+        <div class="eyebrow">NICE TIMING</div>
+        <h2>That was a<br><i>moment.</i></h2>
+        <div class="review-video-wrap"><video id="reviewVideo" controls playsinline></video><div class="video-placeholder" id="reviewPlaceholder">YOUR<br>MOMENT</div><span class="duration-pill" id="clipDuration">00:08</span></div>
+        <p class="review-note">Your clip is ready for today’s reel.</p>
+        <button class="primary-button" id="saveMoment">Add to my reel <span>→</span></button>
+        <button class="text-button" id="redoMoment">Try that again</button>
+      </section>
+
+      <section class="reel-screen screen" id="reel">
+        <div class="eyebrow">YOUR DAY, IN MOMENTS</div>
+        <h2>A little more<br><i>you.</i></h2>
+        <div class="reel-card">
+          <div class="reel-header"><span>IN THE MOMENT</span><span>JUL 14, 2026</span></div>
+          <div class="reel-clips" id="reelClips"></div>
+          <div class="reel-player" id="reelPlayer" hidden>
+            <video id="reelVideo" class="reel-player-video" playsinline></video>
+            <video id="reelVideoNext" class="reel-player-video" playsinline></video>
+            <div class="reel-player-caption" id="reelPlayerCaption"></div>
+            <button class="reel-player-toggle" id="reelPlayerToggle" aria-label="Pause reel">Ⅱ</button>
+            <input class="reel-scrubber" id="reelScrubber" type="range" min="0" max="1000" value="0" aria-label="Reel progress">
+          </div>
+          <div class="reel-footer">three sounds. perfectly timed.</div>
+          <button class="reel-play" id="reelPlay" aria-label="Play reel">▶</button>
+        </div>
+        <div class="style-row"><span class="mono">REEL STYLE</span><button class="style-pill active" data-style="Minimal">Minimal</button><button class="style-pill" data-style="Bold">Bold</button><button class="style-pill" data-style="Off">No labels</button></div>
+        <button class="primary-button" id="exportReel">Share my reel <span class="share-icon">↗</span></button>
+        <p class="footnote" id="exportStatus">Captions will use your local time.</p>
+      </section>
+      <section class="export-screen screen" id="export">
+        <div class="eyebrow">CREATING YOUR REEL</div>
+        <div class="export-stage">
+          <div class="export-heading">
+            <div class="export-spinner"><div class="spinner"></div></div>
+            <h2>Working on your<br><i>export.</i></h2>
+            <p id="exportProgressText">Bringing your moments together…</p>
+          </div>
+          <div class="export-progress-track"><i id="exportProgress"></i></div>
+          <span class="mono" id="exportPercent">0%</span>
+        </div>
+        <button class="primary-button" id="cancelExport">Cancel export <span>×</span></button>
+      </section>
+    </main>
+    <nav class="bottom-nav"><a class="nav-active" href="#home">Today</a><a href="#reel">My reels</a><a href="#settings">Settings</a></nav>
+    <div class="toast" id="toast" role="status"></div>
+    <div class="export-sheet" id="exportSheet" hidden>
+      <button class="sheet-scrim" id="closeExportSheet" aria-label="Close export options"></button>
+      <section class="sheet-panel" aria-label="Share my reel">
+        <div class="sheet-handle"></div>
+        <p class="mono">SHARE MY REEL</p>
+        <h3>Send the moment<br>out into the world.</h3>
+        <button class="export-option" id="downloadClips"><span class="export-symbol">↓</span><span><b>Export vertical video</b><small>One 9:16 video with captions and time</small></span></button>
+        <button class="export-option" id="copyCaption"><span class="export-symbol">⧉</span><span><b>Copy reel caption</b><small>Ready to paste anywhere</small></span></button>
+      </section>
+    </div>
+    <script src="challenge-data.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
