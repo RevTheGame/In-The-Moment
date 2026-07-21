@@ -5,7 +5,7 @@ const dailyRandom = (() => { let seed = dateSeed || 1; return () => ((seed = (se
 const dailyShuffle = list => [...list].sort(() => dailyRandom() - .5);
 const challenges = dailyShuffle(['Random', 'Beautiful', 'Funny'].map(vibe => { const matches = challengeCatalog.filter(challenge => challenge.vibe === vibe); return matches[Math.floor(dailyRandom() * matches.length)]; }));
 
-let current = 0, completed = [], stream, recorder, chunks = [], startTime, timerId, lastBlob, lastDuration = 0, reelUrls = [], recordingAudioContext, recordingAudioDestination, microphoneSource, reelStyle = 'Minimal', cameraFacing = 'environment', reelPlayback, exportJob;
+let current = 0, completed = [], stream, recorder, chunks = [], startTime, timerId, lastBlob, lastDuration = 0, reelUrls = [], recordingAudioContext, recordingAudioDestination, microphoneSource, reelStyle = 'Minimal', cameraFacing = 'environment', reelPlayback, exportJob, reelControlsTimer;
 let sessionClips = [];
 const $ = selector => document.querySelector(selector);
 const now = new Date();
@@ -87,7 +87,7 @@ async function playReel() {
   const clips = (await getClips()).sort((a, b) => a.challenge - b.challenge); if (!clips.length) return toast('Record a moment first.');
   const player = $('#reelPlayer'), caption = $('#reelPlayerCaption'); let activeVideo = $('#reelVideo'), waitingVideo = $('#reelVideoNext'), index = 0, currentUrl, waitingUrl;
   player.hidden = false; player.className = `reel-player reel-style-${reelStyle.toLowerCase()}`; activeVideo.style.opacity = '1'; waitingVideo.style.opacity = '0';
-  reelPlayback = { clips, index, activeVideo, waitingVideo, total: clips.reduce((total, clip) => total + (clip.duration || 1), 0) }; $('#reelPlayerToggle').textContent = 'Ⅱ';
+  reelPlayback = { clips, index, activeVideo, waitingVideo, total: clips.reduce((total, clip) => total + (clip.duration || 1), 0) }; $('#reelPlayerToggle').textContent = 'Ⅱ'; revealReelControls();
   const setCaption = clip => { caption.innerHTML = reelStyle === 'Off' ? '' : `<span class="caption-title">${reelStyle === 'Bold' ? challenges[clip.challenge].title.toUpperCase() : challenges[clip.challenge].title}</span><span class="caption-time">${formatTimestamp(clip.capturedAt)}</span>`; };
   const loadVideo = (video, clip) => new Promise((resolve, reject) => { const url = URL.createObjectURL(clip.blob); video.src = url; video.onloadeddata = () => resolve(url); video.onerror = reject; });
   async function playClip(alreadyPlaying = false) {
@@ -107,16 +107,19 @@ async function playReel() {
   }
   playClip();
 }
-function stopReelPlayback() { if (!reelPlayback) return; reelPlayback.activeVideo.pause(); reelPlayback.waitingVideo.pause(); $('#reelPlayer').hidden = true; $('#reelPlayerToggle').textContent = '▶'; reelPlayback = null; }
-function toggleReelPlayback() { if (!reelPlayback) return playReel(); const videos = [reelPlayback.activeVideo, reelPlayback.waitingVideo], paused = reelPlayback.activeVideo.paused; videos.forEach(video => paused ? video.play() : video.pause()); $('#reelPlayerToggle').textContent = paused ? 'Ⅱ' : '▶'; }
+function revealReelControls() { const player = $('#reelPlayer'); clearTimeout(reelControlsTimer); player.classList.add('show-controls'); reelControlsTimer = setTimeout(() => { if (reelPlayback && !reelPlayback.activeVideo.paused) player.classList.remove('show-controls'); }, 1400); }
+function stopReelPlayback() { if (!reelPlayback) return; clearTimeout(reelControlsTimer); reelPlayback.activeVideo.pause(); reelPlayback.waitingVideo.pause(); $('#reelPlayer').hidden = true; $('#reelPlayer').classList.remove('show-controls'); $('#reelPlayerToggle').textContent = '▶'; reelPlayback = null; }
+function pauseReelPlayback() { if (!reelPlayback) return; reelPlayback.activeVideo.pause(); reelPlayback.waitingVideo.pause(); $('#reelPlayerToggle').textContent = '▶'; revealReelControls(); }
+function toggleReelPlayback() { if (!reelPlayback) return playReel(); const videos = [reelPlayback.activeVideo, reelPlayback.waitingVideo], paused = reelPlayback.activeVideo.paused; videos.forEach(video => paused ? video.play() : video.pause()); $('#reelPlayerToggle').textContent = paused ? 'Ⅱ' : '▶'; revealReelControls(); }
 
 $('#startMoment').onclick = prepareCamera; $('#backButton').onclick = () => show('#home');
 $('#cancelRecord').onclick = () => { stream?.getTracks().forEach(track => track.stop()); stream = null; show('#challenge'); };
 $('#recordButton').onclick = () => startTime ? stopRecording() : startRecording(); $('#soundTrigger').onclick = playSound; $('#saveMoment').onclick = saveMoment; $('#redoMoment').onclick = prepareCamera;
 $('#flipCamera').onclick = flipCamera;
 $('#compilationButton').onclick = async () => { await renderReel(); show('#reel'); }; $('#reelPlay').onclick = playReel;
-$('#reelPlayerToggle').onclick = toggleReelPlayback;
-$('#reelScrubber').oninput = event => { if (!reelPlayback) return; const currentDuration = reelPlayback.activeVideo.duration || 1; reelPlayback.activeVideo.currentTime = Math.max(0, Math.min(currentDuration, event.target.value / 1000 * currentDuration)); event.target.style.setProperty('--scrub-progress', `${event.target.value / 10}%`); };
+$('#reelPlayer').onclick = event => { if (event.target === $('#reelScrubber')) return; toggleReelPlayback(); };
+$('#reelPlayerToggle').onclick = event => { event.stopPropagation(); toggleReelPlayback(); };
+$('#reelScrubber').oninput = event => { event.stopPropagation(); if (!reelPlayback) return; const currentDuration = reelPlayback.activeVideo.duration || 1; reelPlayback.activeVideo.currentTime = Math.max(0, Math.min(currentDuration, event.target.value / 1000 * currentDuration)); event.target.style.setProperty('--scrub-progress', `${event.target.value / 10}%`); revealReelControls(); };
 $('#cancelExport').onclick = cancelCurrentExport;
 function closeExportSheet() { $('#exportSheet').hidden = true; }
 async function shareReel() {
@@ -150,7 +153,7 @@ async function exportVerticalReel() {
   try { exportRecorder = mimeType ? new MediaRecorder(output, { mimeType }) : new MediaRecorder(output); exportJob.recorder = exportRecorder; } catch (error) { $('#exportStatus').textContent = 'Export is not supported in this browser.'; exportJob = null; setExporting(false); show('#reel'); return toast('This browser cannot create a video export.'); }
   const finished = new Promise(resolve => { exportRecorder.onstop = () => resolve(new Blob(parts, { type: exportRecorder.mimeType })); });
   exportRecorder.ondataavailable = event => { if (event.data.size) parts.push(event.data); }; exportRecorder.start();
-  const items = await Promise.all(clips.map(async clip => { const video = document.createElement('video'), url = URL.createObjectURL(clip.blob); video.src = url; video.playsInline = true; video.preload = 'auto'; await new Promise((resolve, reject) => { video.oncanplay = resolve; video.onerror = reject; }); const source = exportAudioContext.createMediaElementSource(video), gain = exportAudioContext.createGain(); source.connect(gain).connect(audioDestination); return { clip, video, url, gain }; }));
+  const items = await Promise.all(clips.map(async clip => { const video = document.createElement('video'), url = URL.createObjectURL(clip.blob); video.src = url; video.playsInline = true; video.muted = true; video.defaultMuted = true; video.setAttribute('muted', ''); video.preload = 'auto'; await new Promise((resolve, reject) => { video.oncanplay = resolve; video.onerror = reject; }); const source = exportAudioContext.createMediaElementSource(video), gain = exportAudioContext.createGain(); source.connect(gain).connect(audioDestination); return { clip, video, url, gain }; }));
   const transitionDuration = .35; setExportProgress(5);
   for (let index = 0; index < items.length && !exportJob.cancelled; index += 1) {
     const item = items[index], next = items[index + 1]; let nextStarted = false, frame;
@@ -172,7 +175,7 @@ async function exportVerticalReel() {
   setExportProgress(100); $('#exportStatus').textContent = extension === 'mp4' ? 'Your 9:16 MP4 reel is ready.' : 'Your 9:16 reel is ready (this browser exported WebM).'; exportJob = null; setExporting(false); show('#reel'); toast(extension === 'mp4' ? 'MP4 reel downloaded.' : 'Vertical reel downloaded.');
 }
 async function copyReelCaption() { await navigator.clipboard.writeText('Three sounds. Perfectly timed. #InTheMoment'); closeExportSheet(); toast('Reel caption copied.'); }
-$('#exportReel').onclick = () => { $('#exportSheet').hidden = false; };
+$('#exportReel').onclick = () => { pauseReelPlayback(); $('#exportSheet').hidden = false; };
 $('#closeExportSheet').onclick = closeExportSheet; $('#downloadClips').onclick = exportVerticalReel; $('#copyCaption').onclick = copyReelCaption;
 document.querySelectorAll('.style-pill').forEach(button => button.onclick = async () => { reelStyle = button.dataset.style; document.querySelectorAll('.style-pill').forEach(item => item.classList.remove('active')); button.classList.add('active'); await renderReel(); toast(`${button.dataset.style} reel style selected`); });
 $('#settingsButton').onclick = () => toast('Settings coming soon');
