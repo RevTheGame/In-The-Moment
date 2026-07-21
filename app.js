@@ -48,9 +48,10 @@ function prepareRecordingAudio() {
   const AudioContext = window.AudioContext || window.webkitAudioContext;
   recordingAudioContext = new AudioContext(); recordingAudioContext.resume();
   recordingAudioDestination = recordingAudioContext.createMediaStreamDestination();
+  if (isMobileSafari && stream.getAudioTracks().length) { microphoneSource = recordingAudioContext.createMediaStreamSource(stream); microphoneSource.connect(recordingAudioDestination); }
   return new MediaStream([...stream.getVideoTracks(), ...recordingAudioDestination.stream.getAudioTracks()]);
 }
-function startMicCapture() { lastMicBlob = null; micChunks = []; if (!stream?.getAudioTracks().length) return; try { micRecorder = new MediaRecorder(new MediaStream([stream.getAudioTracks()[0].clone()])); micStopPromise = new Promise(resolve => { micRecorder.ondataavailable = event => { if (event.data.size) micChunks.push(event.data); }; micRecorder.onstop = () => { lastMicBlob = micChunks.length ? new Blob(micChunks, { type: micRecorder.mimeType || 'audio/webm' }) : null; resolve(); }; isMobileSafari ? micRecorder.start() : micRecorder.start(1000); }); } catch (_) { micRecorder = null; micStopPromise = Promise.resolve(); } }
+function startMicCapture() { lastMicBlob = null; micChunks = []; micStopPromise = Promise.resolve(); if (isMobileSafari || !stream?.getAudioTracks().length) return; try { micRecorder = new MediaRecorder(new MediaStream([stream.getAudioTracks()[0].clone()])); micStopPromise = new Promise(resolve => { micRecorder.ondataavailable = event => { if (event.data.size) micChunks.push(event.data); }; micRecorder.onstop = () => { lastMicBlob = micChunks.length ? new Blob(micChunks, { type: micRecorder.mimeType || 'audio/webm' }) : null; resolve(); }; micRecorder.start(1000); }); } catch (_) { micRecorder = null; micStopPromise = Promise.resolve(); } }
 async function loadSoundBuffer(soundPath) { if (!soundBufferCache.has(soundPath)) soundBufferCache.set(soundPath, fetch(encodeURI(soundPath)).then(response => { if (!response.ok) throw new Error('Sound unavailable'); return response.arrayBuffer(); }).then(data => recordingAudioContext.decodeAudioData(data))); return soundBufferCache.get(soundPath); }
 async function playSound(isScheduledSound = false) {
   if (!recordingAudioContext || !recordingAudioDestination) return;
