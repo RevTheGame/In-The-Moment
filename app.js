@@ -7,6 +7,7 @@ const challenges = dailyShuffle(['Random', 'Beautiful', 'Funny'].map(vibe => { c
 
 let current = 0, completed = [], stream, recorder, chunks = [], startTime, timerId, lastBlob, lastDuration = 0, reelUrls = [], recordingAudioContext, recordingAudioDestination, microphoneSource, micGain, reelStyle = 'Minimal', cameraFacing = 'environment', reelPlayback, exportJob, reelControlsTimer, randomSoundTimer;
 let sessionClips = [];
+const soundBufferCache = new Map();
 let soundSettings = { randomSoundPlay:false, randomSounds:false, fxVolume:'medium', micVolume:'on', ...JSON.parse(localStorage.getItem('itm-sound-settings') || '{}') };
 const $ = selector => document.querySelector(selector);
 const isMobileSafari = /iP(ad|hone|od)/.test(navigator.userAgent) && /WebKit/.test(navigator.userAgent) && !/CriOS|FxiOS/.test(navigator.userAgent);
@@ -49,12 +50,13 @@ function prepareRecordingAudio() {
   if (stream.getAudioTracks().length && soundSettings.micVolume === 'on') { microphoneSource = recordingAudioContext.createMediaStreamSource(stream); micGain = recordingAudioContext.createGain(); micGain.gain.value = 1; microphoneSource.connect(micGain).connect(recordingAudioDestination); }
   return new MediaStream([...stream.getVideoTracks(), ...recordingAudioDestination.stream.getAudioTracks()]);
 }
-function playSound(isScheduledSound = false) {
+async function loadSoundBuffer(soundPath) { if (!soundBufferCache.has(soundPath)) soundBufferCache.set(soundPath, fetch(encodeURI(soundPath)).then(response => { if (!response.ok) throw new Error('Sound unavailable'); return response.arrayBuffer(); }).then(data => recordingAudioContext.decodeAudioData(data))); return soundBufferCache.get(soundPath); }
+async function playSound(isScheduledSound = false) {
   if (!recordingAudioContext || !recordingAudioDestination) return;
-  recordingAudioContext.resume();
-  const selectedSound = soundForPlayback(), sound = new Audio(selectedSound.soundPath), source = recordingAudioContext.createMediaElementSource(sound), gain = recordingAudioContext.createGain(), volume = { low:.35, medium:.7, high:1 }[soundSettings.fxVolume];
+  await recordingAudioContext.resume();
+  const selectedSound = soundForPlayback(), volume = { low:.35, medium:.7, high:1 }[soundSettings.fxVolume];
   const unlockSoundButton = () => { if (isScheduledSound && startTime) { $('#soundTrigger').disabled = false; $('#soundTrigger span:last-child').textContent = 'Play the sound'; } };
-  gain.gain.value = volume; source.connect(gain); gain.connect(recordingAudioContext.destination); gain.connect(recordingAudioDestination); sound.play().then(() => { if (isScheduledSound) setTimeout(unlockSoundButton, 120); }).catch(() => { toast('The sound could not be played.'); unlockSoundButton(); }); sound.onended = () => { source.disconnect(); gain.disconnect(); unlockSoundButton(); };
+  try { const buffer = await loadSoundBuffer(selectedSound.soundPath), source = recordingAudioContext.createBufferSource(), gain = recordingAudioContext.createGain(); source.buffer = buffer; gain.gain.value = volume; source.connect(gain); gain.connect(recordingAudioContext.destination); gain.connect(recordingAudioDestination); source.start(); if (isScheduledSound) setTimeout(unlockSoundButton, 120); source.onended = () => { source.disconnect(); gain.disconnect(); unlockSoundButton(); }; } catch (error) { const sound = new Audio(selectedSound.soundPath), source = recordingAudioContext.createMediaElementSource(sound), gain = recordingAudioContext.createGain(); gain.gain.value = volume; source.connect(gain); gain.connect(recordingAudioContext.destination); gain.connect(recordingAudioDestination); sound.play().then(() => { if (isScheduledSound) setTimeout(unlockSoundButton, 120); }).catch(() => { toast('The sound could not be played.'); unlockSoundButton(); }); sound.onended = () => { source.disconnect(); gain.disconnect(); unlockSoundButton(); }; }
 }
 
 async function connectCamera() {
@@ -90,15 +92,15 @@ async function renderReel() {
   $('#reelClips').innerHTML = challenges.map((challenge, index) => { const clip = clips.find(item => item.challenge === index), url = clip?.blob ? URL.createObjectURL(clip.blob) : '', shortTitle = challenge.short || challenge.title, label = reelStyle === 'Bold' ? shortTitle.toUpperCase() : shortTitle; if (url) reelUrls.push(url); return `<div class="reel-clip" style="--card-color:${challenge.color}">${url ? `<video src="${url}" muted playsinline preload="metadata"></video>` : ''}${reelStyle === 'Off' ? '' : `<span>${clip ? label : '—'}</span>`}</div>`; }).join('');
   $('#reelPlayer').hidden = true;
 }
-async function playReel() {
+async function playReel(startIndex = 0, startTime = 0, autoPlay = true) {
   const clips = (await getClips()).sort((a, b) => a.challenge - b.challenge); if (!clips.length) return toast('Record a moment first.');
-  const player = $('#reelPlayer'), caption = $('#reelPlayerCaption'); let activeVideo = $('#reelVideo'), waitingVideo = $('#reelVideoNext'), index = 0, currentUrl, waitingUrl;
+  const player = $('#reelPlayer'), caption = $('#reelPlayerCaption'); let activeVideo = $('#reelVideo'), waitingVideo = $('#reelVideoNext'), index = startIndex, currentUrl, waitingUrl, initialTime = startTime;
   player.hidden = false; player.className = `reel-player reel-style-${reelStyle.toLowerCase()}`; activeVideo.style.opacity = '1'; waitingVideo.style.opacity = '0';
   reelPlayback = { clips, index, activeVideo, waitingVideo, total: clips.reduce((total, clip) => total + (clip.duration || 1), 0) }; $('#reelPlayerToggle').textContent = 'Ⅱ'; revealReelControls();
   const setCaption = clip => { caption.innerHTML = reelStyle === 'Off' ? '' : `<span class="caption-title">${reelStyle === 'Bold' ? challenges[clip.challenge].title.toUpperCase() : challenges[clip.challenge].title}</span><span class="caption-time">${formatTimestamp(clip.capturedAt)}</span>`; };
   const loadVideo = (video, clip) => new Promise((resolve, reject) => { const url = URL.createObjectURL(clip.blob); video.src = url; video.onloadeddata = () => resolve(url); video.onerror = reject; });
   async function playClip(alreadyPlaying = false) {
-    const clip = clips[index]; setCaption(clip); if (!alreadyPlaying) { currentUrl = await loadVideo(activeVideo, clip); await activeVideo.play(); }
+    const clip = clips[index]; setCaption(clip); if (!alreadyPlaying) { currentUrl = await loadVideo(activeVideo, clip); activeVideo.currentTime = initialTime; initialTime = 0; if (autoPlay) await activeVideo.play(); else $('#reelPlayerToggle').textContent = '▶'; }
     let transitionStarted = false, transitionPromise;
     activeVideo.ontimeupdate = () => {
       const elapsed = clips.slice(0, index).reduce((total, item) => total + (item.duration || 1), 0) + activeVideo.currentTime, progress = Math.min(1000, Math.round(elapsed / reelPlayback.total * 1000)); $('#reelScrubber').value = progress; $('#reelScrubber').style.setProperty('--scrub-progress', `${progress / 10}%`);
@@ -127,7 +129,7 @@ $('#flipCamera').onclick = flipCamera;
 $('#compilationButton').onclick = async () => { await renderReel(); show('#reel'); }; $('#reelPlay').onclick = playReel;
 $('#reelPlayer').onclick = event => { if (event.target === $('#reelScrubber')) return; toggleReelPlayback(); };
 $('#reelPlayerToggle').onclick = event => { event.stopPropagation(); toggleReelPlayback(); };
-$('#reelScrubber').oninput = event => { event.stopPropagation(); if (!reelPlayback) return; const currentDuration = reelPlayback.activeVideo.duration || 1; reelPlayback.activeVideo.currentTime = Math.max(0, Math.min(currentDuration, event.target.value / 1000 * currentDuration)); event.target.style.setProperty('--scrub-progress', `${event.target.value / 10}%`); revealReelControls(); };
+$('#reelScrubber').oninput = event => { event.stopPropagation(); if (!reelPlayback) return; const targetSeconds = event.target.value / 1000 * reelPlayback.total; let elapsed = 0, targetIndex = 0, clipOffset = 0; for (let index = 0; index < reelPlayback.clips.length; index += 1) { const duration = reelPlayback.clips[index].duration || 1; if (targetSeconds <= elapsed + duration || index === reelPlayback.clips.length - 1) { targetIndex = index; clipOffset = targetSeconds - elapsed; break; } elapsed += duration; } event.target.style.setProperty('--scrub-progress', `${event.target.value / 10}%`); if (targetIndex === reelPlayback.index) { reelPlayback.activeVideo.currentTime = Math.max(0, Math.min(reelPlayback.activeVideo.duration || 1, clipOffset)); revealReelControls(); return; } const wasPlaying = !reelPlayback.activeVideo.paused; stopReelPlayback(); playReel(targetIndex, clipOffset, wasPlaying); };
 $('#cancelExport').onclick = cancelCurrentExport;
 function closeExportSheet() { $('#exportSheet').hidden = true; }
 async function shareReel() {
