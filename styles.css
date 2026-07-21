@@ -34,6 +34,6 @@ body:has(.record-screen.active) .bottom-nav, body:has(.review-screen.active) .bo
 .record-button i { pointer-events:none; }
 .record-button.is-recording { border-radius:19px; transform:scale(.92); background:#ff514a; border-color:#ff514a; }
 .record-button.is-recording i { background:#ff514a; }
-.record-button { position:relative; z-index:4; display:inline-grid; place-items:center; overflow:hidden; touch-action:manipulation; -webkit-appearance:none; appearance:none; }.record-button::after { content:""; display:block; position:absolute; z-index:3; inset:0; }.record-button i { position:relative; z-index:1; }
+.record-button { position:relative; z-index:4; display:inline-grid; place-items:center; overflow:hidden; touch-action:manipulation; -webkit-appearance:none; appearance:none; }.record-button::after { display:none; pointer-events:none; }.record-button i { position:relative; z-index:1; pointer-events:none; }
 .flip-camera { position:absolute; right:24px; bottom:45px; z-index:2; height:43px; width:43px; display:grid; place-items:center; border:1px solid #ffffff55; border-radius:50%; background:#1111116e; color:#fff; font-size:25px; line-height:1; }
 .recording-guidance { position:absolute; top:116px; left:34px; right:34px; margin:0; color:#fff; text-align:center; font-size:12px; line-height:1.35; text-shadow:0 1px 6px #000; }
