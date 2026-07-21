@@ -14,7 +14,7 @@
     <main class="app-shell">
       <header class="topbar">
         <a href="#home" class="brand" aria-label="In The Moment home">in the <em>moment</em></a>
-        <button class="icon-button" id="settingsButton" aria-label="Open settings"><span></span><span></span><span></span></button>
+        <button class="icon-button settings-cog" id="settingsButton" aria-label="Open settings">⚙</button>
       </header>
 
       <section class="home-screen screen active" id="home">
@@ -112,6 +112,18 @@
         <h3>Send the moment<br>out into the world.</h3>
         <button class="export-option" id="downloadClips"><span class="export-symbol">↓</span><span><b>Export vertical video</b><small>One 9:16 video with captions and time</small></span></button>
         <button class="export-option" id="copyCaption"><span class="export-symbol">⧉</span><span><b>Copy reel caption</b><small>Ready to paste anywhere</small></span></button>
+      </section>
+    </div>
+    <div class="settings-sheet" id="settingsSheet" hidden>
+      <button class="sheet-scrim" id="closeSettings" aria-label="Close settings"></button>
+      <section class="sheet-panel settings-panel" aria-label="Settings">
+        <div class="sheet-handle"></div>
+        <p class="mono">SETTINGS</p>
+        <h3>Make it sound<br><i>like you.</i></h3>
+        <div class="setting-row"><span><b>Random sound play</b><small>Plays a sound 3–7 seconds after recording starts</small></span><button class="setting-toggle" id="randomSoundPlay" aria-pressed="false"></button></div>
+        <div class="setting-row"><span><b>Random sounds</b><small>Uses a different available sound each time</small></span><button class="setting-toggle" id="randomSounds" aria-pressed="false"></button></div>
+        <div class="setting-choice"><b>Sound FX volume</b><div class="choice-group" id="fxVolume"><button data-value="low">Low</button><button data-value="medium">Medium</button><button data-value="high">High</button></div></div>
+        <div class="setting-choice"><b>Mic volume</b><div class="choice-group" id="micVolume"><button data-value="off">Off</button><button data-value="on">On</button></div></div>
       </section>
     </div>
     <script src="challenge-data.js"></script>
