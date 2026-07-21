@@ -72,13 +72,13 @@ body:has(.record-screen.active) .bottom-nav { display:none; }
 
 /* Home header and date hierarchy */
 .topbar { height:68px; align-items:center; }
-.topbar-actions { display:flex; align-items:center; gap:9px; }
+.topbar-actions { display:flex; align-items:center; align-self:center; gap:9px; height:42px; }
 .brand { font-size:30px; letter-spacing:-1.6px; font-weight:700; line-height:1; }
 .brand em { font-weight:700; }
-.icon-button { width:42px; height:42px; display:grid; place-items:center; padding:0; color:var(--ink); }
+.icon-button { width:42px; height:42px; display:flex; align-items:center; justify-content:center; padding:0; color:var(--ink); line-height:1; }
 .settings-cog { font-size:31px; }
-.theme-toggle { font-size:29px; line-height:1; }
-.theme-toggle span { width:auto; height:auto; background:transparent; line-height:1; }
+.theme-toggle { font-size:29px; }
+.theme-toggle span { width:auto; height:auto; background:transparent; display:block; line-height:1; transform:translateY(2px); }
 .home-screen .build-stamp { margin-top:3px; }
 .home-screen #todayDate.home-date { height:16.666dvh; min-height:92px; max-height:142px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:7px; margin:0; padding:0; border:0; border-radius:0; color:inherit; font-size:inherit; letter-spacing:normal; text-align:center; }
 .home-date span { color:var(--orange); font:11px "DM Mono",monospace; letter-spacing:1.8px; text-transform:uppercase; }

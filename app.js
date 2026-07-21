@@ -8,6 +8,7 @@ const challenges = dailyShuffle(['Random', 'Beautiful', 'Funny'].map(vibe => { c
 let current = 0, completed = [], stream, recorder, startTime, timerId, lastBlob, lastMicBlob, lastSoundEvents = [], lastDuration = 0, lastAudioLayout = 'native', reelUrls = [], cachedReelClips = [], recordingAudioContext, recordingSoundEvents = [], reelStyle = 'Minimal', cameraFacing = 'environment', reelPlayback, exportJob, reelControlsTimer, randomSoundTimer, recordButtonLockedUntil = 0, recordingStopping = false, recordingSession = 0;
 let sessionClips = [];
 const soundDataCache = new Map();
+let safariReelAudioContext;
 let soundSettings = { randomSoundPlay:false, randomSounds:false, fxVolume:'medium', micVolume:'on', ...JSON.parse(localStorage.getItem('itm-sound-settings') || '{}') };
 let themeMode = localStorage.getItem('itm-theme') === 'dark' ? 'dark' : 'light';
 const $ = selector => document.querySelector(selector);
@@ -82,6 +83,14 @@ function prepareRecordingAudio() {
   }
   lastAudioLayout = 'native';
 }
+function unlockSafariReelAudio() {
+  if (!useSafariExportWorkaround) return null;
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContext) return null;
+  if (!safariReelAudioContext || safariReelAudioContext.state === 'closed') safariReelAudioContext = new AudioContext();
+  void safariReelAudioContext.resume().catch(() => {});
+  return safariReelAudioContext;
+}
 async function loadSoundBuffer(audioContext, soundPath) {
   if (!audioContext) throw new Error('Audio playback is unavailable.');
   if (!soundDataCache.has(soundPath)) soundDataCache.set(soundPath, fetch(encodeURI(soundPath)).then(response => { if (!response.ok) throw new Error('Sound unavailable'); return response.arrayBuffer(); }));
@@ -93,9 +102,13 @@ async function playSound(isScheduledSound = false) {
   if (!startTime || recordingStopping) return;
   const selectedSound = soundForPlayback(), volume = { low:.35, medium:.7, high:1 }[soundSettings.fxVolume];
   const unlockSoundButton = () => { if (isScheduledSound && startTime) { $('#soundTrigger').disabled = false; $('#soundTrigger span:last-child').textContent = 'Play the sound'; } };
+  let savedSoundEvent = false;
   const rememberSound = () => {
-    if (startTime && !recordingStopping) recordingSoundEvents.push({ soundPath:selectedSound.soundPath, offsetMs:Math.max(0, Date.now() - startTime), volume });
+    if (!savedSoundEvent && startTime && !recordingStopping) { recordingSoundEvents.push({ soundPath:selectedSound.soundPath, offsetMs:Math.max(0, Date.now() - startTime), volume }); savedSoundEvent = true; }
   };
+  // Safari can finish decoding after a short recording stops. Preserve the
+  // user’s tap immediately so preview/export always have an effect to rebuild.
+  if (useSafariExportWorkaround) rememberSound();
   const playFallbackSound = () => {
     const sound = new Audio(selectedSound.soundPath); sound.volume = volume;
     sound.play().then(() => { rememberSound(); if (isScheduledSound) setTimeout(unlockSoundButton, 120); }).catch(() => { toast('The sound could not be played.'); unlockSoundButton(); });
@@ -215,7 +228,7 @@ async function renderReel() {
 function playSequentialReel(clips, startIndex = 0) {
   if (reelPlayback) stopReelPlayback();
   const player = $('#reelPlayer'), video = $('#reelVideo'), waitingVideo = $('#reelVideoNext'), caption = $('#reelPlayerCaption'), token = Symbol('reel-preview');
-  let index = startIndex, currentUrl = null, micAudio = null, micUrl = null, activeClip = null, sourceVersion = 0, cleaned = false, reelSoundContext = null, soundScheduleVersion = 0;
+  let index = startIndex, currentUrl = null, micAudio = null, micUrl = null, activeClip = null, sourceVersion = 0, cleaned = false, reelSoundContext = useSafariExportWorkaround ? unlockSafariReelAudio() : null, soundScheduleVersion = 0;
   const scheduledSoundSources = new Set();
   const ownsPlayback = () => reelPlayback?.token === token;
   const clearVideo = target => {
@@ -239,9 +252,10 @@ function playSequentialReel(clips, startIndex = 0) {
     if (!shouldPlay || !events.length || !ownsPlayback()) return;
     const scheduleVersion = ++soundScheduleVersion;
     try {
-      const AudioContext = window.AudioContext;
+      const AudioContext = useSafariExportWorkaround ? (window.AudioContext || window.webkitAudioContext) : window.AudioContext;
       if (!AudioContext) return;
-      if (!reelSoundContext || reelSoundContext.state === 'closed') reelSoundContext = new AudioContext();
+      if (!reelSoundContext || reelSoundContext.state === 'closed') reelSoundContext = useSafariExportWorkaround ? unlockSafariReelAudio() : new AudioContext();
+      if (!reelSoundContext) return;
       await reelSoundContext.resume();
       await Promise.all(events.map(async event => {
         const buffer = await loadSoundBuffer(reelSoundContext, event.soundPath);
@@ -285,6 +299,7 @@ function playSequentialReel(clips, startIndex = 0) {
     cleaned = true; sourceVersion += 1; pauseAudio(); stopMic(); clearVideo(video); clearVideo(waitingVideo);
     if (currentUrl) URL.revokeObjectURL(currentUrl);
     if (reelSoundContext && reelSoundContext.state !== 'closed') reelSoundContext.close().catch(() => {});
+    if (reelSoundContext === safariReelAudioContext) safariReelAudioContext = null;
     currentUrl = null; activeClip = null;
   };
   clearVideo(waitingVideo); clearVideo(video); video.muted = false; video.defaultMuted = false; video.removeAttribute('muted'); video.volume = 1; video.setAttribute('playsinline', '');
@@ -339,7 +354,7 @@ async function playReel(startIndex = 0) {
 function revealReelControls() { const player = $('#reelPlayer'); clearTimeout(reelControlsTimer); player.classList.add('show-controls'); reelControlsTimer = setTimeout(() => { if (reelPlayback && !reelPlayback.activeVideo.paused) player.classList.remove('show-controls'); }, 1400); }
 function stopReelPlayback() { if (!reelPlayback) return; clearTimeout(reelControlsTimer); const playback = reelPlayback; playback.cleanup?.(); playback.activeVideo.pause(); playback.waitingVideo.pause(); playback.micAudio?.pause(); $('#reelPlayer').hidden = true; $('#reelPlayer').classList.remove('show-controls'); $('#reelPlayerToggle').textContent = '▶'; if (reelPlayback === playback) reelPlayback = null; }
 function pauseReelPlayback() { if (!reelPlayback) return; reelPlayback.activeVideo.pause(); reelPlayback.waitingVideo.pause(); reelPlayback.pauseMic?.(); $('#reelPlayerToggle').textContent = '▶'; revealReelControls(); }
-function toggleReelPlayback() { if (!reelPlayback) return playReel(); const activeVideo = reelPlayback.activeVideo, paused = activeVideo.paused, resume = video => video.play(); if (paused) { const resumeActive = resume(activeVideo); reelPlayback.resumeMic?.(); resumeActive.catch(() => toast('Tap play to resume with sound.')); if (reelPlayback.waitingVideo.src && reelPlayback.waitingVideo.style.opacity === '1') resume(reelPlayback.waitingVideo); } else { activeVideo.pause(); reelPlayback.waitingVideo.pause(); reelPlayback.pauseMic?.(); } $('#reelPlayerToggle').textContent = paused ? 'Ⅱ' : '▶'; revealReelControls(); }
+function toggleReelPlayback() { unlockSafariReelAudio(); if (!reelPlayback) return playReel(); const activeVideo = reelPlayback.activeVideo, paused = activeVideo.paused, resume = video => video.play(); if (paused) { const resumeActive = resume(activeVideo); reelPlayback.resumeMic?.(); resumeActive.catch(() => toast('Tap play to resume with sound.')); if (reelPlayback.waitingVideo.src && reelPlayback.waitingVideo.style.opacity === '1') resume(reelPlayback.waitingVideo); } else { activeVideo.pause(); reelPlayback.waitingVideo.pause(); reelPlayback.pauseMic?.(); } $('#reelPlayerToggle').textContent = paused ? 'Ⅱ' : '▶'; revealReelControls(); }
 
 $('#startMoment').onclick = prepareCamera; $('#backButton').onclick = () => show('#home');
 $('#cancelRecord').onclick = () => { recordingSession += 1; recordingStopping = false; clearInterval(timerId); if (recorder?.state === 'recording') recorder.stop(); recorder = null; releaseRecordingResources(); $('#recordButton').disabled = false; $('#recordButton').classList.remove('is-recording'); $('#recordLabel').textContent = 'TAP TO RECORD'; show('#challenge'); };
@@ -377,7 +392,7 @@ const activateFlipCamera = event => {
 const flipCameraButton = $('#flipCamera');
 flipCameraButton.addEventListener('pointerup', activateFlipCamera);
 flipCameraButton.addEventListener('click', activateFlipCamera);
-$('#compilationButton').onclick = async () => { await renderReel(); show('#reel'); setActiveNav('#reel'); }; $('#reelPlay').onclick = () => playReel();
+$('#compilationButton').onclick = async () => { await renderReel(); show('#reel'); setActiveNav('#reel'); }; $('#reelPlay').onclick = () => { unlockSafariReelAudio(); return playReel(); };
 $('#reelPlayer').onclick = event => { if (event.target === $('#reelRewind')) return; toggleReelPlayback(); };
 $('#reelPlayerToggle').onclick = event => { event.stopPropagation(); toggleReelPlayback(); };
 $('#reelRewind').onclick = event => { event.stopPropagation(); if (!reelPlayback) return; stopReelPlayback(); playReel(0, 0, true); };
@@ -412,6 +427,13 @@ async function exportVerticalReel() {
   closeExportSheet(); exportJob = { cancelled:false, audioContext:exportAudioContext }; setExporting(true); setExportProgress(0); show('#export');
   const canvas = document.createElement('canvas'); canvas.width = 540; canvas.height = 960; const context = canvas.getContext('2d');
   const audioDestination = exportAudioContext.createMediaStreamDestination();
+  // WebKit can detach a stream-only graph during encoding. Mirror Safari audio
+  // to the live output as well, while keeping other browsers on their existing
+  // MediaStreamDestination-only route.
+  const connectExportGain = gain => {
+    gain.connect(audioDestination);
+    if (useSafariExportWorkaround) gain.connect(exportAudioContext.destination);
+  };
   await document.fonts?.load('52px "Archivo Black"');
   await resumeExportAudio;
   const candidates = ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm'];
@@ -429,7 +451,7 @@ async function exportVerticalReel() {
       safariKeepAliveSource = exportAudioContext.createConstantSource();
       safariKeepAliveGain = exportAudioContext.createGain();
       safariKeepAliveGain.gain.value = .000001;
-      safariKeepAliveSource.connect(safariKeepAliveGain).connect(audioDestination);
+      safariKeepAliveSource.connect(safariKeepAliveGain); connectExportGain(safariKeepAliveGain);
       safariKeepAliveSource.start();
       context.fillStyle = '#171716'; context.fillRect(0, 0, canvas.width, canvas.height);
       canvasTrack?.requestFrame?.();
@@ -463,9 +485,9 @@ async function exportVerticalReel() {
   const waitForExportVideo = video => new Promise((resolve, reject) => { let settled = false; const finish = () => { if (!settled) { settled = true; resolve(); } }; video.onloadeddata = finish; video.oncanplay = finish; video.onerror = () => { if (!settled) { settled = true; reject(new Error('Could not load this clip.')); } }; if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) finish(); setTimeout(finish, 5000); });
   const prepareExportItem = async clip => {
     const url = URL.createObjectURL(clip.blob); let video, source, gain, mic, micUrl, micSource, micGain;
-    if (!stagedExport) { video = document.createElement('video'); video.className = 'export-video-stage'; video.playsInline = true; video.preload = 'auto'; video.muted = false; video.volume = 1; document.body.append(video); source = exportAudioContext.createMediaElementSource(video); gain = exportAudioContext.createGain(); source.connect(gain).connect(audioDestination); stagedExport = { video, source, gain }; }
+    if (!stagedExport) { video = document.createElement('video'); video.className = 'export-video-stage'; video.playsInline = true; video.preload = 'auto'; video.muted = false; video.volume = 1; document.body.append(video); source = exportAudioContext.createMediaElementSource(video); gain = exportAudioContext.createGain(); source.connect(gain); connectExportGain(gain); stagedExport = { video, source, gain }; }
     ({ video, source, gain } = stagedExport); video.pause(); video.removeAttribute('src'); video.load(); video.src = url; video.load();
-    if (clip.audioLayout !== 'native' && soundSettings.micVolume === 'on' && clip.micBlob) { micUrl = URL.createObjectURL(clip.micBlob); mic = new Audio(micUrl); mic.preload = 'auto'; micSource = exportAudioContext.createMediaElementSource(mic); micGain = exportAudioContext.createGain(); micSource.connect(micGain).connect(audioDestination); }
+    if (clip.audioLayout !== 'native' && soundSettings.micVolume === 'on' && clip.micBlob) { micUrl = URL.createObjectURL(clip.micBlob); mic = new Audio(micUrl); mic.preload = 'auto'; micSource = exportAudioContext.createMediaElementSource(mic); micGain = exportAudioContext.createGain(); micSource.connect(micGain); connectExportGain(micGain); }
     const soundBuffers = (await Promise.all((clip.soundEvents || []).map(async event => {
       try { return { event, buffer:await loadSoundBuffer(exportAudioContext, event.soundPath) }; } catch (_) { return null; }
     }))).filter(Boolean);
@@ -481,7 +503,7 @@ async function exportVerticalReel() {
     const startAt = exportAudioContext.currentTime;
     item.soundSources = item.soundBuffers.map(({ event, buffer }) => {
       const source = exportAudioContext.createBufferSource(), gain = exportAudioContext.createGain();
-      source.buffer = buffer; gain.gain.value = event.volume ?? .7; source.connect(gain).connect(audioDestination);
+      source.buffer = buffer; gain.gain.value = event.volume ?? .7; source.connect(gain); connectExportGain(gain);
       source.onended = () => { source.disconnect(); gain.disconnect(); };
       source.start(startAt + Math.max(0, event.offsetMs || 0) / 1000);
       return source;
@@ -496,7 +518,7 @@ async function exportVerticalReel() {
       const elapsed = Math.max(0, videoTime - eventTime);
       if (elapsed >= buffer.duration) return false;
       const source = exportAudioContext.createBufferSource(), gain = exportAudioContext.createGain();
-      source.buffer = buffer; gain.gain.value = event.volume ?? .7; source.connect(gain).connect(audioDestination);
+      source.buffer = buffer; gain.gain.value = event.volume ?? .7; source.connect(gain); connectExportGain(gain);
       source.onended = () => { source.disconnect(); gain.disconnect(); };
       source.start(exportAudioContext.currentTime, elapsed);
       item.soundSources.push(source);
