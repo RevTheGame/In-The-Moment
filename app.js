@@ -5,12 +5,14 @@ const dailyRandom = (() => { let seed = dateSeed || 1; return () => ((seed = (se
 const dailyShuffle = list => [...list].sort(() => dailyRandom() - .5);
 const challenges = dailyShuffle(['Random', 'Beautiful', 'Funny'].map(vibe => { const matches = challengeCatalog.filter(challenge => challenge.vibe === vibe); return matches[Math.floor(dailyRandom() * matches.length)]; }));
 
-let current = 0, completed = [], stream, recorder, chunks = [], micRecorder, micChunks = [], micStopPromise = Promise.resolve(), startTime, timerId, lastBlob, lastMicBlob, lastDuration = 0, reelUrls = [], cachedReelClips = [], recordingAudioContext, recordingAudioDestination, microphoneSource, micGain, reelStyle = 'Minimal', cameraFacing = 'environment', reelPlayback, exportJob, reelControlsTimer, randomSoundTimer, reviewVideoUrl;
+let current = 0, completed = [], stream, recorder, chunks = [], micRecorder, micChunks = [], micStopPromise = Promise.resolve(), startTime, timerId, lastBlob, lastMicBlob, lastDuration = 0, reelUrls = [], cachedReelClips = [], recordingAudioContext, recordingAudioDestination, microphoneSource, micGain, reelStyle = 'Minimal', cameraFacing = 'environment', reelPlayback, exportJob, reelControlsTimer, randomSoundTimer, reviewVideoUrl, recordButtonLockedUntil = 0;
 let sessionClips = [];
 const soundBufferCache = new Map();
 let soundSettings = { randomSoundPlay:false, randomSounds:false, fxVolume:'medium', micVolume:'on', ...JSON.parse(localStorage.getItem('itm-sound-settings') || '{}') };
 const $ = selector => document.querySelector(selector);
 const isMobileSafari = /iP(ad|hone|od)/.test(navigator.userAgent) && /WebKit/.test(navigator.userAgent) && !/CriOS|FxiOS/.test(navigator.userAgent);
+const isSafari = /WebKit/.test(navigator.userAgent) && !/CriOS|FxiOS|Chrome|Chromium|Edg|OPR|Android/.test(navigator.userAgent);
+const isAndroid = /Android/i.test(navigator.userAgent);
 const now = new Date();
 $('#todayDate').textContent = now.toLocaleDateString([], { weekday:'long', month:'long', day:'numeric' }).toUpperCase();
 $('#reelDate').textContent = now.toLocaleDateString([], { month:'short', day:'numeric', year:'numeric' }).toUpperCase();
@@ -28,6 +30,7 @@ async function getClips() { try { const storedClips = await clipDatabase.then(da
 async function saveClip(clip) { try { await clipDatabase.then(database => new Promise((resolve, reject) => { const store = database.transaction('clips', 'readwrite').objectStore('clips'); const remove = store.delete(clip.challenge); remove.onerror = () => reject(remove.error); const save = store.put(clip); save.onsuccess = () => resolve(); save.onerror = () => reject(save.error); })); } catch (error) { sessionClips = [...sessionClips.filter(item => item.challenge !== clip.challenge), clip]; } }
 async function deleteAllRecordings() { if (!window.confirm('Delete every saved recording? This cannot be undone.')) return; stopReelPlayback(); sessionClips = []; cachedReelClips = []; completed = []; lastBlob = null; if (reviewVideoUrl) URL.revokeObjectURL(reviewVideoUrl); reelUrls.forEach(URL.revokeObjectURL); reelUrls = []; try { const database = await clipDatabase; await new Promise((resolve, reject) => { const request = database.transaction('clips', 'readwrite').objectStore('clips').clear(); request.onsuccess = () => resolve(); request.onerror = () => reject(request.error); }); database.close(); } catch (_) { /* Session-only clips were already cleared. */ } window.location.hash = 'home'; window.location.reload(); }
 function show(id) { document.querySelectorAll('.screen').forEach(screen => screen.classList.remove('active')); $(id).classList.add('active'); window.scrollTo(0, 0); }
+function setActiveNav(href) { document.querySelectorAll('.bottom-nav a').forEach(link => link.classList.toggle('nav-active', link.getAttribute('href') === href)); }
 function toast(message) { const notification = $('#toast'); notification.textContent = message; notification.classList.add('show'); setTimeout(() => notification.classList.remove('show'), 2200); }
 function formatted(seconds) { return `00:${String(seconds).padStart(2, '0')}`; }
 
@@ -48,10 +51,10 @@ function prepareRecordingAudio() {
   const AudioContext = window.AudioContext || window.webkitAudioContext;
   recordingAudioContext = new AudioContext(); recordingAudioContext.resume();
   recordingAudioDestination = recordingAudioContext.createMediaStreamDestination();
-  if (isMobileSafari && stream.getAudioTracks().length) { microphoneSource = recordingAudioContext.createMediaStreamSource(stream); microphoneSource.connect(recordingAudioDestination); }
+  if ((isSafari || isAndroid) && stream.getAudioTracks().length) { microphoneSource = recordingAudioContext.createMediaStreamSource(stream); microphoneSource.connect(recordingAudioDestination); }
   return new MediaStream([...stream.getVideoTracks(), ...recordingAudioDestination.stream.getAudioTracks()]);
 }
-function startMicCapture() { lastMicBlob = null; micChunks = []; micStopPromise = Promise.resolve(); if (isMobileSafari || !stream?.getAudioTracks().length) return; try { micRecorder = new MediaRecorder(new MediaStream([stream.getAudioTracks()[0].clone()])); micStopPromise = new Promise(resolve => { micRecorder.ondataavailable = event => { if (event.data.size) micChunks.push(event.data); }; micRecorder.onstop = () => { lastMicBlob = micChunks.length ? new Blob(micChunks, { type: micRecorder.mimeType || 'audio/webm' }) : null; resolve(); }; micRecorder.start(1000); }); } catch (_) { micRecorder = null; micStopPromise = Promise.resolve(); } }
+function startMicCapture() { lastMicBlob = null; micChunks = []; micStopPromise = Promise.resolve(); if (isSafari || isAndroid || !stream?.getAudioTracks().length) return; try { micRecorder = new MediaRecorder(new MediaStream([stream.getAudioTracks()[0].clone()])); micStopPromise = new Promise(resolve => { micRecorder.ondataavailable = event => { if (event.data.size) micChunks.push(event.data); }; micRecorder.onstop = () => { lastMicBlob = micChunks.length ? new Blob(micChunks, { type: micRecorder.mimeType || 'audio/webm' }) : null; resolve(); }; micRecorder.start(1000); }); } catch (_) { micRecorder = null; micStopPromise = Promise.resolve(); } }
 async function loadSoundBuffer(soundPath) { if (!soundBufferCache.has(soundPath)) soundBufferCache.set(soundPath, fetch(encodeURI(soundPath)).then(response => { if (!response.ok) throw new Error('Sound unavailable'); return response.arrayBuffer(); }).then(data => recordingAudioContext.decodeAudioData(data))); return soundBufferCache.get(soundPath); }
 async function playSound(isScheduledSound = false) {
   if (!recordingAudioContext || !recordingAudioDestination) return;
@@ -74,15 +77,15 @@ async function flipCamera() { if (startTime) return toast('Finish this clip befo
 function startRecording() {
   if (startTime) return;
   if (!stream) return toast('Please allow camera access before recording.');
-  chunks = []; startTime = Date.now(); $('#recordButton').classList.add('is-recording'); $('#recordLabel').textContent = 'RECORDING — TAP TO FINISH'; $('#soundTrigger').disabled = soundSettings.randomSoundPlay; $('#soundTrigger span:last-child').textContent = soundSettings.randomSoundPlay ? 'Sound incoming…' : 'Play the sound';
+  chunks = []; startTime = Date.now(); recordButtonLockedUntil = startTime + 250; $('#recordButton').classList.add('is-recording'); $('#recordLabel').textContent = 'RECORDING — TAP TO FINISH'; $('#soundTrigger').disabled = soundSettings.randomSoundPlay; $('#soundTrigger span:last-child').textContent = soundSettings.randomSoundPlay ? 'Sound incoming…' : 'Play the sound';
   timerId = setInterval(() => $('#timer').textContent = formatted(Math.floor((Date.now() - startTime) / 1000)), 250);
-  try { const recordingStream = prepareRecordingAudio(); startMicCapture(); recorder = new MediaRecorder(recordingStream); recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); }; recorder.onstop = async () => { lastBlob = new Blob(chunks, { type: recorder.mimeType || 'video/webm' }); recorder = null; await micStopPromise; displayReview(); }; isMobileSafari ? recorder.start() : recorder.start(1000); if (soundSettings.randomSoundPlay) randomSoundTimer = setTimeout(() => { if (startTime) playSound(true); }, (3 + Math.random() * 4) * 1000); } catch (error) { clearInterval(timerId); startTime = null; toast('This browser cannot save camera recordings.'); }
+  try { const recordingStream = prepareRecordingAudio(); startMicCapture(); recorder = new MediaRecorder(recordingStream); recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); }; recorder.onstop = async () => { lastBlob = new Blob(chunks, { type: recorder.mimeType || 'video/webm' }); recorder = null; await micStopPromise; displayReview(); }; (isSafari || isAndroid) ? recorder.start() : recorder.start(1000); if (soundSettings.randomSoundPlay) randomSoundTimer = setTimeout(() => { if (startTime) playSound(true); }, (3 + Math.random() * 4) * 1000); } catch (error) { clearInterval(timerId); startTime = null; toast('This browser cannot save camera recordings.'); }
 }
-function stopRecording() { if (!startTime) return; clearInterval(timerId); clearTimeout(randomSoundTimer); lastDuration = Math.max(1, Math.floor((Date.now() - startTime) / 1000)); $('#clipDuration').textContent = formatted(lastDuration); if (!isMobileSafari) { try { micRecorder?.requestData(); recorder?.requestData(); } catch (_) { /* Some mobile recorders only flush on stop. */ } } if (micRecorder?.state !== 'inactive') micRecorder.stop(); if (recorder && recorder.state !== 'inactive') recorder.stop(); else displayReview(); }
+function stopRecording() { if (!startTime || Date.now() < recordButtonLockedUntil) return; recordButtonLockedUntil = Date.now() + 250; clearInterval(timerId); clearTimeout(randomSoundTimer); lastDuration = Math.max(1, Math.floor((Date.now() - startTime) / 1000)); $('#clipDuration').textContent = formatted(lastDuration); if (!isSafari && !isAndroid) { try { micRecorder?.requestData(); recorder?.requestData(); } catch (_) { /* Some mobile recorders only flush on stop. */ } } if (micRecorder?.state !== 'inactive') micRecorder.stop(); if (recorder && recorder.state !== 'inactive') recorder.stop(); else displayReview(); }
 function displayReview() {
   clearTimeout(randomSoundTimer); stream?.getTracks().forEach(track => track.stop()); stream = null; recordingAudioContext?.close(); recordingAudioContext = recordingAudioDestination = microphoneSource = micGain = null;
   const video = $('#reviewVideo'); video.pause(); if (reviewVideoUrl) URL.revokeObjectURL(reviewVideoUrl); reviewVideoUrl = null; video.removeAttribute('src'); video.load(); video.style.display = 'none'; $('#reviewPlaceholder').style.display = 'grid';
-  if (lastBlob?.size) { reviewVideoUrl = URL.createObjectURL(lastBlob); video.playbackRate = video.defaultPlaybackRate = 1; video.src = reviewVideoUrl; video.load(); video.style.display = 'block'; $('#reviewPlaceholder').style.display = 'none'; }
+  if (lastBlob?.size) { reviewVideoUrl = URL.createObjectURL(lastBlob); video.playbackRate = video.defaultPlaybackRate = 1; video.onloadedmetadata = () => { if (Number.isFinite(video.duration)) { lastDuration = Math.max(1, Math.round(video.duration)); $('#clipDuration').textContent = formatted(lastDuration); } }; video.src = reviewVideoUrl; video.load(); video.style.display = 'block'; $('#reviewPlaceholder').style.display = 'none'; }
   show('#review'); $('#recordButton').classList.remove('is-recording'); $('#recordLabel').textContent = 'TAP TO RECORD'; $('#soundTrigger').disabled = true; startTime = null;
 }
 async function saveMoment() { if (!lastBlob?.size) return toast('No video was captured. Try recording again.'); const button = $('#saveMoment'), originalLabel = button.innerHTML; button.disabled = true; button.textContent = 'Adding to your reel…'; try { await micStopPromise; await saveClip({ challenge: current, day: today, blob: lastBlob, micBlob: lastMicBlob, duration: lastDuration, capturedAt: new Date().toISOString() }); cachedReelClips = []; reelUrls.forEach(URL.revokeObjectURL); reelUrls = []; await refreshCompleted(); await renderReel(); toast('Video saved to your reel'); show('#home'); } catch (error) { toast('Could not save this clip. Please try again.'); } finally { button.disabled = false; button.innerHTML = originalLabel; } }
@@ -137,9 +140,10 @@ function toggleReelPlayback() { if (!reelPlayback) return playReel(); const acti
 
 $('#startMoment').onclick = prepareCamera; $('#backButton').onclick = () => show('#home');
 $('#cancelRecord').onclick = () => { clearTimeout(randomSoundTimer); stream?.getTracks().forEach(track => track.stop()); stream = null; recordingAudioContext?.close(); recordingAudioContext = recordingAudioDestination = microphoneSource = micGain = null; show('#challenge'); };
-$('#recordButton').onclick = () => startTime ? stopRecording() : startRecording(); $('#soundTrigger').onclick = playSound; $('#saveMoment').onclick = saveMoment; $('#redoMoment').onclick = prepareCamera;
+const toggleRecordButton = () => { if (Date.now() < recordButtonLockedUntil) return; startTime ? stopRecording() : startRecording(); };
+$('#recordButton').onpointerup = null; $('#recordButton').onclick = event => { event.preventDefault(); toggleRecordButton(); }; $('#soundTrigger').onclick = playSound; $('#saveMoment').onclick = saveMoment; $('#redoMoment').onclick = prepareCamera;
 $('#flipCamera').onclick = flipCamera;
-$('#compilationButton').onclick = async () => { await renderReel(); show('#reel'); }; $('#reelPlay').onclick = () => playReel();
+$('#compilationButton').onclick = async () => { await renderReel(); show('#reel'); setActiveNav('#reel'); }; $('#reelPlay').onclick = () => playReel();
 $('#reelPlayer').onclick = event => { if (event.target === $('#reelRewind')) return; toggleReelPlayback(); };
 $('#reelPlayerToggle').onclick = event => { event.stopPropagation(); toggleReelPlayback(); };
 $('#reelRewind').onclick = event => { event.stopPropagation(); if (!reelPlayback) return; stopReelPlayback(); playReel(0, 0, true); };
@@ -239,4 +243,5 @@ $('#micOnExport').onclick = () => { soundSettings.micVolume = soundSettings.micV
 $('#deleteRecordings').onclick = deleteAllRecordings;
 renderSoundSettings();
 document.querySelectorAll('.bottom-nav a').forEach(link => link.onclick = async event => { event.preventDefault(); if (link.getAttribute('href') === '#reel') { if (completed.length !== challenges.length) return toast('Capture all three moments to unlock your reel.'); await renderReel(); show('#reel'); } else if (link.getAttribute('href') === '#home') show('#home'); else toast('Settings coming soon'); document.querySelectorAll('.bottom-nav a').forEach(item => item.classList.remove('nav-active')); link.classList.add('nav-active'); });
+$('.brand').onclick = event => { event.preventDefault(); stopReelPlayback(); show('#home'); setActiveNav('#home'); };
 refreshCompleted();
