@@ -5,7 +5,7 @@ const dailyRandom = (() => { let seed = dateSeed || 1; return () => ((seed = (se
 const dailyShuffle = list => [...list].sort(() => dailyRandom() - .5);
 const challenges = dailyShuffle(['Random', 'Beautiful', 'Funny'].map(vibe => { const matches = challengeCatalog.filter(challenge => challenge.vibe === vibe); return matches[Math.floor(dailyRandom() * matches.length)]; }));
 
-let current = 0, completed = [], stream, recorder, micRecorder, micChunks = [], micStopPromise = Promise.resolve(), micCaptureTrack, startTime, timerId, lastBlob, lastMicBlob, lastDuration = 0, lastAudioLayout = 'mixed', reelUrls = [], cachedReelClips = [], recordingAudioContext, recordingAudioDestination, microphoneSource, micGain, reelStyle = 'Minimal', cameraFacing = 'environment', reelPlayback, exportJob, reelControlsTimer, randomSoundTimer, reviewVideoUrl, reviewMicAudio, reviewMicUrl, recordButtonLockedUntil = 0, recordingStopping = false, recordingSession = 0;
+let current = 0, completed = [], stream, recorder, micRecorder, micChunks = [], micStopPromise = Promise.resolve(), micCaptureTrack, finishMicCapture = () => {}, startTime, timerId, lastBlob, lastMicBlob, lastDuration = 0, lastAudioLayout = 'mixed', reelUrls = [], cachedReelClips = [], recordingAudioContext, recordingAudioDestination, microphoneSource, micGain, reelStyle = 'Minimal', cameraFacing = 'environment', reelPlayback, exportJob, reelControlsTimer, randomSoundTimer, reviewVideoUrl, reviewMicAudio, reviewMicUrl, recordButtonLockedUntil = 0, recordingStopping = false, recordingSession = 0;
 let sessionClips = [];
 const soundBufferCache = new Map();
 let soundSettings = { randomSoundPlay:false, randomSounds:false, fxVolume:'medium', micVolume:'on', ...JSON.parse(localStorage.getItem('itm-sound-settings') || '{}') };
@@ -57,17 +57,17 @@ function prepareRecordingAudio() {
   const AudioContext = window.AudioContext || window.webkitAudioContext;
   recordingAudioContext = new AudioContext(); recordingAudioContext.resume();
   recordingAudioDestination = recordingAudioContext.createMediaStreamDestination();
-  // Safari has a stable single-stream capture path. Elsewhere the microphone is
-  // retained in a companion recording so the Mic Audio setting remains reversible.
-  lastAudioLayout = isSafari ? 'mixed' : 'separate';
-  if (isSafari) connectMicrophoneToRecordingDestination();
+  // Keep the camera recorder on one clock: camera video plus embedded SFX.  The
+  // microphone is captured separately below.  Routing Safari's microphone
+  // through this Web Audio destination made its video timestamps race ahead.
+  lastAudioLayout = 'separate';
   return new MediaStream([...stream.getVideoTracks(), ...recordingAudioDestination.stream.getAudioTracks()]);
 }
 function startMicCapture(session = recordingSession) {
-  lastMicBlob = null; micChunks = []; micStopPromise = Promise.resolve(); micRecorder = null;
+  lastMicBlob = null; micChunks = []; micStopPromise = Promise.resolve(); micRecorder = null; finishMicCapture = () => {};
   micCaptureTrack?.stop(); micCaptureTrack = null;
-  if (isSafari || !stream?.getAudioTracks().length) return;
-  let activeMicRecorder, resolveMicStop;
+  if (!stream?.getAudioTracks().length) return;
+  let activeMicRecorder, resolveMicStop, forceSettleTimer;
   try {
     const captureTrack = micCaptureTrack = stream.getAudioTracks()[0].clone();
     const micStream = new MediaStream([captureTrack]);
@@ -75,28 +75,44 @@ function startMicCapture(session = recordingSession) {
     activeMicRecorder = micRecorder = supportedMime ? new MediaRecorder(micStream, { mimeType:supportedMime }) : new MediaRecorder(micStream);
     const recordingMicChunks = []; micChunks = recordingMicChunks;
     let settled = false;
-    const settle = () => {
+    const saveCapturedAudio = () => {
+      if (session === recordingSession && !lastMicBlob) lastMicBlob = recordingMicChunks.length ? new Blob(recordingMicChunks, { type:activeMicRecorder.mimeType || 'audio/webm' }) : null;
+    };
+    const settle = saveAudio => {
       if (settled) return;
       settled = true;
+      clearTimeout(forceSettleTimer);
+      if (saveAudio) saveCapturedAudio();
       captureTrack.stop();
       if (micCaptureTrack === captureTrack) micCaptureTrack = null;
       if (micRecorder === activeMicRecorder) micRecorder = null;
+      if (finishMicCapture === finish) finishMicCapture = () => {};
       resolveMicStop?.();
     };
     micStopPromise = new Promise(resolve => { resolveMicStop = resolve; });
     activeMicRecorder.ondataavailable = event => { if (event.data.size) recordingMicChunks.push(event.data); };
     activeMicRecorder.onstop = () => {
-      if (session === recordingSession) lastMicBlob = recordingMicChunks.length ? new Blob(recordingMicChunks, { type:activeMicRecorder.mimeType || 'audio/webm' }) : null;
+      saveCapturedAudio();
       settle();
     };
     activeMicRecorder.onerror = () => { if (session === recordingSession) lastMicBlob = null; settle(); };
-    // One final blob avoids Android's unreliable periodic chunk timestamps.
-    activeMicRecorder.start();
+    const finish = () => {
+      if (activeMicRecorder.state === 'inactive') return settle(true);
+      // Mobile recorders are most reliable when they create one final chunk on
+      // stop.  Do not force a periodic/requestData flush on Safari or Android.
+      if (!isSafari && !isAndroid) { try { activeMicRecorder.requestData(); } catch (_) { /* The final stop event still flushes audio. */ } }
+      try { activeMicRecorder.stop(); } catch (_) { settle(true); return; }
+      forceSettleTimer = setTimeout(() => settle(true), 1800);
+    };
+    finishMicCapture = finish;
+    // A single final chunk prevents Android and Safari timestamp drift caused by
+    // periodic MediaRecorder slices. Keep the established desktop chunking path.
+    (isSafari || isAndroid) ? activeMicRecorder.start() : activeMicRecorder.start(1000);
   } catch (_) {
     try { if (activeMicRecorder?.state === 'recording') activeMicRecorder.stop(); } catch (_) { /* The companion recorder never started. */ }
     micCaptureTrack?.stop(); micCaptureTrack = null; micRecorder = null;
-    // If an Android device cannot create the companion audio recorder, retain
-    // microphone audio in the primary clip instead of silently dropping it.
+    // If this browser cannot make a companion recorder, retain microphone audio
+    // in the primary clip rather than dropping it.  This is the only mixed path.
     lastAudioLayout = 'mixed'; connectMicrophoneToRecordingDestination();
     resolveMicStop?.();
   }
@@ -121,15 +137,55 @@ async function prepareCamera() {
 }
 async function flipCamera() { if (startTime) return toast('Finish this clip before flipping the camera.'); cameraFacing = cameraFacing === 'environment' ? 'user' : 'environment'; stream?.getTracks().forEach(track => track.stop()); stream = null; await connectCamera(); }
 function startRecording() {
-  if (startTime) return;
+  if (startTime || recordingStopping) return;
   if (!stream) return toast('Please allow camera access before recording.');
   const session = ++recordingSession;
   const recordingChunks = [];
   recordingStopping = false; lastBlob = null; lastMicBlob = null; lastDuration = 0; startTime = Date.now(); recordButtonLockedUntil = startTime + 250; $('#recordButton').classList.add('is-recording'); $('#recordLabel').textContent = 'RECORDING — TAP TO FINISH'; $('#soundTrigger').disabled = soundSettings.randomSoundPlay; $('#soundTrigger span:last-child').textContent = soundSettings.randomSoundPlay ? 'Sound incoming…' : 'Play the sound';
   timerId = setInterval(() => $('#timer').textContent = formatted(Math.floor((Date.now() - startTime) / 1000)), 250);
-  try { const recordingStream = prepareRecordingAudio(); startMicCapture(session); const activeRecorder = recorder = new MediaRecorder(recordingStream); activeRecorder.ondataavailable = event => { if (session === recordingSession && event.data.size) recordingChunks.push(event.data); }; activeRecorder.onstop = async () => { if (recorder === activeRecorder) recorder = null; if (session !== recordingSession) return; lastBlob = new Blob(recordingChunks, { type: activeRecorder.mimeType || 'video/webm' }); await micStopPromise; if (session !== recordingSession) return; recordingStopping = false; displayReview(); }; (isSafari || isAndroid) ? activeRecorder.start() : activeRecorder.start(1000); if (soundSettings.randomSoundPlay) randomSoundTimer = setTimeout(() => { if (startTime) playSound(true); }, (3 + Math.random() * 4) * 1000); } catch (error) { clearInterval(timerId); recordingStopping = false; startTime = null; toast('This browser cannot save camera recordings.'); }
+  try {
+    const recordingStream = prepareRecordingAudio();
+    startMicCapture(session);
+    const activeRecorder = recorder = new MediaRecorder(recordingStream);
+    activeRecorder.ondataavailable = event => {
+      if (session === recordingSession && event.data.size) recordingChunks.push(event.data);
+    };
+    activeRecorder.onerror = () => {
+      if (session !== recordingSession) return;
+      recordingSession += 1; recorder = null; recordingStopping = false; clearInterval(timerId); clearTimeout(randomSoundTimer); finishMicCapture(); startTime = null; lastBlob = lastMicBlob = null;
+      $('#recordButton').classList.remove('is-recording'); $('#recordLabel').textContent = 'TAP TO RECORD'; $('#soundTrigger').disabled = true;
+      toast('This recording could not be saved. Please try again.');
+    };
+    activeRecorder.onstop = async () => {
+      if (recorder === activeRecorder) recorder = null;
+      if (session !== recordingSession) return;
+      lastBlob = new Blob(recordingChunks, { type: activeRecorder.mimeType || 'video/webm' });
+      await micStopPromise;
+      if (session !== recordingSession) return;
+      recordingStopping = false;
+      displayReview();
+    };
+    // Safari and Android both produce one well-timed final chunk.  Timeslices on
+    // those engines can yield discontinuous timestamps and accelerated playback.
+    (isSafari || isAndroid) ? activeRecorder.start() : activeRecorder.start(1000);
+    if (soundSettings.randomSoundPlay) randomSoundTimer = setTimeout(() => { if (startTime) playSound(true); }, (3 + Math.random() * 4) * 1000);
+  } catch (error) {
+    recordingSession += 1; clearInterval(timerId); clearTimeout(randomSoundTimer); finishMicCapture(); recorder = null; recordingStopping = false; startTime = null; lastBlob = lastMicBlob = null;
+    $('#recordButton').classList.remove('is-recording'); $('#recordLabel').textContent = 'TAP TO RECORD'; $('#soundTrigger').disabled = true;
+    toast('This browser cannot save camera recordings.');
+  }
 }
-function stopRecording() { if (!startTime || recordingStopping || Date.now() < recordButtonLockedUntil) return; recordingStopping = true; recordButtonLockedUntil = Date.now() + 250; clearInterval(timerId); clearTimeout(randomSoundTimer); lastDuration = Math.max(1, Math.floor((Date.now() - startTime) / 1000)); $('#clipDuration').textContent = formatted(lastDuration); if (!isSafari && !isAndroid) { try { micRecorder?.requestData(); recorder?.requestData(); } catch (_) { /* Some mobile recorders only flush on stop. */ } } if (micRecorder?.state !== 'inactive') micRecorder.stop(); if (recorder?.state === 'recording') { recorder.stop(); return; } if (!recorder) { recordingStopping = false; displayReview(); } }
+function stopRecording() {
+  if (!startTime || recordingStopping || Date.now() < recordButtonLockedUntil) return;
+  recordingStopping = true; recordButtonLockedUntil = Date.now() + 250; clearInterval(timerId); clearTimeout(randomSoundTimer);
+  lastDuration = Math.max(1, Math.floor((Date.now() - startTime) / 1000)); $('#clipDuration').textContent = formatted(lastDuration);
+  finishMicCapture();
+  const activeRecorder = recorder;
+  if (activeRecorder?.state === 'recording') {
+    try { activeRecorder.stop(); return; } catch (_) { /* Fall through to a recoverable review state. */ }
+  }
+  if (!activeRecorder) { recordingStopping = false; displayReview(); }
+}
 function clearReviewMicAudio() {
   const video = $('#reviewVideo');
   video.onplay = video.onpause = video.onseeking = video.onseeked = video.ontimeupdate = video.onratechange = video.onended = null;
@@ -170,7 +226,10 @@ function displayReview() {
     video.playbackRate = video.defaultPlaybackRate = 1;
     video.onloadedmetadata = () => {
       const metadataDuration = Number.isFinite(video.duration) ? Math.max(1, Math.round(video.duration)) : 0;
-      const metadataIsSane = metadataDuration && (!isAndroid || Math.abs(metadataDuration - durationAtStop) <= Math.max(2, durationAtStop * .35));
+      // Safari can occasionally report a container duration that is much longer
+      // than the stopped capture.  Keep the known wall-clock duration unless the
+      // decoded metadata agrees closely enough to be trustworthy.
+      const metadataIsSane = metadataDuration && Math.abs(metadataDuration - durationAtStop) <= Math.max(2, durationAtStop * .35);
       if (metadataIsSane) lastDuration = metadataDuration;
       $('#clipDuration').textContent = formatted(lastDuration);
       try { video.currentTime = 0; video.playbackRate = video.defaultPlaybackRate = 1; } catch (_) { /* The first decoded frame is still the start of the clip. */ }
@@ -299,9 +358,26 @@ function pauseReelPlayback() { if (!reelPlayback) return; reelPlayback.activeVid
 function toggleReelPlayback() { if (!reelPlayback) return playReel(); const activeVideo = reelPlayback.activeVideo, paused = activeVideo.paused, resume = video => isMobileSafari ? video.play() : startPreviewVideo(video); if (paused) { const resumeActive = resume(activeVideo); reelPlayback.resumeMic?.(); resumeActive.catch(() => toast('Tap play to resume with sound.')); if (reelPlayback.waitingVideo.src && reelPlayback.waitingVideo.style.opacity === '1') resume(reelPlayback.waitingVideo); } else { activeVideo.pause(); reelPlayback.waitingVideo.pause(); reelPlayback.pauseMic?.(); } $('#reelPlayerToggle').textContent = paused ? 'Ⅱ' : '▶'; revealReelControls(); }
 
 $('#startMoment').onclick = prepareCamera; $('#backButton').onclick = () => show('#home');
-$('#cancelRecord').onclick = () => { recordingSession += 1; recordingStopping = false; clearInterval(timerId); clearTimeout(randomSoundTimer); if (micRecorder?.state === 'recording') micRecorder.stop(); if (recorder?.state === 'recording') recorder.stop(); recorder = null; stream?.getTracks().forEach(track => track.stop()); stream = null; recordingAudioContext?.close(); recordingAudioContext = recordingAudioDestination = microphoneSource = micGain = null; startTime = null; show('#challenge'); };
+$('#cancelRecord').onclick = () => { recordingSession += 1; recordingStopping = false; clearInterval(timerId); clearTimeout(randomSoundTimer); finishMicCapture(); if (recorder?.state === 'recording') recorder.stop(); recorder = null; stream?.getTracks().forEach(track => track.stop()); stream = null; recordingAudioContext?.close(); recordingAudioContext = recordingAudioDestination = microphoneSource = micGain = null; startTime = null; show('#challenge'); };
 const toggleRecordButton = () => { if (Date.now() < recordButtonLockedUntil) return; startTime ? stopRecording() : startRecording(); };
-$('#recordButton').onpointerup = null; $('#recordButton').onclick = event => { event.preventDefault(); toggleRecordButton(); }; $('#soundTrigger').onclick = playSound; $('#saveMoment').onclick = saveMoment; $('#redoMoment').onclick = prepareCamera;
+const recordButton = $('#recordButton');
+let suppressNextRecordButtonClick = false;
+const activateRecordButton = event => {
+  if (event.type === 'click') {
+    // A touch/mouse press has already activated on pointerdown. Ignore only its
+    // synthetic click; keyboard clicks (detail === 0) remain accessible.
+    if (event.detail && suppressNextRecordButtonClick) { suppressNextRecordButtonClick = false; return; }
+  } else {
+    if (event.button !== undefined && event.button !== 0) return;
+    suppressNextRecordButtonClick = true;
+  }
+  if (event.cancelable) event.preventDefault();
+  toggleRecordButton();
+};
+if (window.PointerEvent) recordButton.addEventListener('pointerdown', activateRecordButton, { passive:false });
+else recordButton.addEventListener('touchstart', activateRecordButton, { passive:false });
+recordButton.addEventListener('click', activateRecordButton);
+$('#soundTrigger').onclick = playSound; $('#saveMoment').onclick = saveMoment; $('#redoMoment').onclick = prepareCamera;
 $('#flipCamera').onclick = flipCamera;
 $('#compilationButton').onclick = async () => { await renderReel(); show('#reel'); setActiveNav('#reel'); }; $('#reelPlay').onclick = () => playReel();
 $('#reelPlayer').onclick = event => { if (event.target === $('#reelRewind')) return; toggleReelPlayback(); };
@@ -328,12 +404,13 @@ function drawExportFrame(context, canvas, video, clip, opacity = 1, clear = true
   context.restore();
 }
 async function exportVerticalReel() {
+  const usesMobileExportProfile = isMobileSafari || isAndroid;
   const ExportAudioContext = window.AudioContext || window.webkitAudioContext;
   const exportAudioContext = new ExportAudioContext();
   const resumeExportAudio = exportAudioContext.resume().catch(() => {});
   const clips = (cachedReelClips.length ? [...cachedReelClips] : await getClips()).sort((a, b) => a.challenge - b.challenge); if (!clips.length) { await exportAudioContext.close(); return toast('Record a moment first.'); }
   closeExportSheet(); exportJob = { cancelled:false, audioContext:exportAudioContext }; setExporting(true); setExportProgress(0); show('#export');
-  const canvas = document.createElement('canvas'); canvas.width = isAndroid ? 540 : 720; canvas.height = isAndroid ? 960 : 1280; const context = canvas.getContext('2d');
+  const canvas = document.createElement('canvas'); canvas.width = usesMobileExportProfile ? 540 : 720; canvas.height = usesMobileExportProfile ? 960 : 1280; const context = canvas.getContext('2d');
   const audioDestination = exportAudioContext.createMediaStreamDestination();
   await document.fonts?.load('52px "Archivo Black"');
   await resumeExportAudio;
@@ -343,10 +420,10 @@ async function exportVerticalReel() {
   const parts = []; let exportRecorder;
   try { exportRecorder = mimeType ? new MediaRecorder(output, { mimeType }) : new MediaRecorder(output); exportJob.recorder = exportRecorder; } catch (error) { $('#exportStatus').textContent = 'Export is not supported in this browser.'; exportJob = null; setExporting(false); show('#reel'); return toast('This browser cannot create a video export.'); }
   const finished = new Promise(resolve => { exportRecorder.onstop = () => resolve(new Blob(parts, { type: exportRecorder.mimeType })); });
-  exportRecorder.ondataavailable = event => { if (event.data.size) parts.push(event.data); }; isAndroid ? exportRecorder.start() : exportRecorder.start(1000);
+  exportRecorder.ondataavailable = event => { if (event.data.size) parts.push(event.data); }; usesMobileExportProfile ? exportRecorder.start() : exportRecorder.start(1000);
   const finishRecorder = async () => {
     if (exportRecorder.state === 'recording') {
-      if (!isAndroid) { try { exportRecorder.requestData(); } catch (_) { /* Safari may already be flushing. */ } await new Promise(resolve => setTimeout(resolve, 150)); }
+      if (!usesMobileExportProfile) { try { exportRecorder.requestData(); } catch (_) { /* Some recorders only flush on stop. */ } await new Promise(resolve => setTimeout(resolve, 150)); }
       exportRecorder.stop();
     }
     return Promise.race([finished, new Promise(resolve => setTimeout(() => resolve(new Blob(parts, { type: exportRecorder.mimeType })), 3500))]);
@@ -363,7 +440,7 @@ async function exportVerticalReel() {
       return false;
     }
   };
-  const useStagedExport = isMobileSafari || isAndroid;
+  const useStagedExport = usesMobileExportProfile;
   let stagedExport;
   const waitForExportVideo = video => new Promise((resolve, reject) => { let settled = false; const finish = () => { if (!settled) { settled = true; resolve(); } }; video.onloadeddata = finish; video.oncanplay = finish; video.onerror = () => { if (!settled) { settled = true; reject(new Error('Could not load this clip.')); } }; if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) finish(); setTimeout(finish, 5000); });
   const prepareExportItem = async clip => {
