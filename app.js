@@ -96,9 +96,9 @@ async function renderReel() {
 async function startPreviewVideo(video) { try { await video.play(); } catch (error) { video.muted = true; video.defaultMuted = true; video.setAttribute('muted', ''); await video.play().catch(() => toast('Video playback is unavailable in this browser.')); } }
 function playMobileSafariReel(clips) {
   const player = $('#reelPlayer'), video = $('#reelVideo'), waitingVideo = $('#reelVideoNext'), caption = $('#reelPlayerCaption'); let index = 0, currentUrl;
-  player.hidden = false; player.className = `reel-player reel-style-${reelStyle.toLowerCase()}`; video.style.opacity = '1'; waitingVideo.style.opacity = '0'; video.muted = true; video.defaultMuted = true; video.setAttribute('muted', '');
+  player.hidden = false; player.className = `reel-player reel-style-${reelStyle.toLowerCase()}`; video.style.opacity = '1'; waitingVideo.style.opacity = '0'; video.muted = false; video.defaultMuted = false; video.removeAttribute('muted'); video.volume = 1;
   reelPlayback = { clips, index, activeVideo:video, waitingVideo, total:clips.reduce((total, clip) => total + (clip.duration || 1), 0) }; $('#reelPlayerToggle').textContent = 'Ⅱ'; revealReelControls();
-  const playIndex = () => { const clip = clips[index]; caption.innerHTML = reelStyle === 'Off' ? '' : `<span class="caption-title">${reelStyle === 'Bold' ? challenges[clip.challenge].title.toUpperCase() : challenges[clip.challenge].title}</span><span class="caption-time">${formatTimestamp(clip.capturedAt)}</span>`; if (currentUrl) URL.revokeObjectURL(currentUrl); currentUrl = URL.createObjectURL(clip.blob); video.src = currentUrl; video.load(); video.play().catch(() => { $('#reelPlayerToggle').textContent = '▶'; toast('Tap the play control to start the reel.'); }); video.onended = () => { if (index === clips.length - 1) { player.hidden = true; reelPlayback = null; return; } index += 1; reelPlayback.index = index; playIndex(); }; };
+  const playIndex = () => { const clip = clips[index]; caption.innerHTML = reelStyle === 'Off' ? '' : `<span class="caption-title">${reelStyle === 'Bold' ? challenges[clip.challenge].title.toUpperCase() : challenges[clip.challenge].title}</span><span class="caption-time">${formatTimestamp(clip.capturedAt)}</span>`; if (currentUrl) URL.revokeObjectURL(currentUrl); currentUrl = URL.createObjectURL(clip.blob); video.src = currentUrl; video.load(); video.play().catch(() => { $('#reelPlayerToggle').textContent = '▶'; toast('Tap play to start the reel with sound.'); }); video.onended = () => { if (index === clips.length - 1) { player.hidden = true; reelPlayback = null; return; } index += 1; reelPlayback.index = index; playIndex(); }; };
   playIndex();
 }
 async function playReel(startIndex = 0, startTime = 0, autoPlay = true) {
@@ -129,7 +129,7 @@ async function playReel(startIndex = 0, startTime = 0, autoPlay = true) {
 function revealReelControls() { const player = $('#reelPlayer'); clearTimeout(reelControlsTimer); player.classList.add('show-controls'); reelControlsTimer = setTimeout(() => { if (reelPlayback && !reelPlayback.activeVideo.paused) player.classList.remove('show-controls'); }, 1400); }
 function stopReelPlayback() { if (!reelPlayback) return; clearTimeout(reelControlsTimer); reelPlayback.activeVideo.pause(); reelPlayback.waitingVideo.pause(); $('#reelPlayer').hidden = true; $('#reelPlayer').classList.remove('show-controls'); $('#reelPlayerToggle').textContent = '▶'; reelPlayback = null; }
 function pauseReelPlayback() { if (!reelPlayback) return; reelPlayback.activeVideo.pause(); reelPlayback.waitingVideo.pause(); $('#reelPlayerToggle').textContent = '▶'; revealReelControls(); }
-function toggleReelPlayback() { if (!reelPlayback) return playReel(); const activeVideo = reelPlayback.activeVideo, paused = activeVideo.paused; if (paused) { startPreviewVideo(activeVideo); if (reelPlayback.waitingVideo.src && reelPlayback.waitingVideo.style.opacity === '1') startPreviewVideo(reelPlayback.waitingVideo); } else { activeVideo.pause(); reelPlayback.waitingVideo.pause(); } $('#reelPlayerToggle').textContent = paused ? 'Ⅱ' : '▶'; revealReelControls(); }
+function toggleReelPlayback() { if (!reelPlayback) return playReel(); const activeVideo = reelPlayback.activeVideo, paused = activeVideo.paused, resume = video => isMobileSafari ? video.play() : startPreviewVideo(video); if (paused) { resume(activeVideo).catch(() => toast('Tap play to resume with sound.')); if (reelPlayback.waitingVideo.src && reelPlayback.waitingVideo.style.opacity === '1') resume(reelPlayback.waitingVideo); } else { activeVideo.pause(); reelPlayback.waitingVideo.pause(); } $('#reelPlayerToggle').textContent = paused ? 'Ⅱ' : '▶'; revealReelControls(); }
 
 $('#startMoment').onclick = prepareCamera; $('#backButton').onclick = () => show('#home');
 $('#cancelRecord').onclick = () => { clearTimeout(randomSoundTimer); stream?.getTracks().forEach(track => track.stop()); stream = null; recordingAudioContext?.close(); recordingAudioContext = recordingAudioDestination = microphoneSource = micGain = null; show('#challenge'); };
@@ -181,13 +181,23 @@ async function exportVerticalReel() {
     }
     return Promise.race([finished, new Promise(resolve => setTimeout(() => resolve(new Blob(parts, { type: exportRecorder.mimeType })), 3500))]);
   };
-  const prepareExportItem = async clip => { const video = document.createElement('video'), url = URL.createObjectURL(clip.blob); video.src = url; video.playsInline = true; video.muted = false; video.volume = 1; video.preload = 'auto'; if (isMobileSafari) { video.className = 'export-video-stage'; document.body.append(video); } await new Promise((resolve, reject) => { video.oncanplay = resolve; video.onerror = reject; }); const source = exportAudioContext.createMediaElementSource(video), gain = exportAudioContext.createGain(); source.connect(gain).connect(audioDestination); return { clip, video, url, gain }; };
+  let mobileExportStage;
+  const waitForExportVideo = video => new Promise((resolve, reject) => { let settled = false; const finish = () => { if (!settled) { settled = true; resolve(); } }; video.onloadeddata = finish; video.oncanplay = finish; video.onerror = () => { if (!settled) { settled = true; reject(new Error('Could not load this clip.')); } }; if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) finish(); setTimeout(finish, 5000); });
+  const prepareExportItem = async clip => {
+    const url = URL.createObjectURL(clip.blob); let video, source, gain;
+    if (isMobileSafari) {
+      if (!mobileExportStage) { video = document.createElement('video'); video.className = 'export-video-stage'; video.playsInline = true; video.preload = 'auto'; video.muted = false; video.volume = 1; document.body.append(video); source = exportAudioContext.createMediaElementSource(video); gain = exportAudioContext.createGain(); source.connect(gain).connect(audioDestination); mobileExportStage = { video, source, gain }; }
+      ({ video, source, gain } = mobileExportStage); video.pause(); video.removeAttribute('src'); video.load(); video.src = url; video.load();
+    } else { video = document.createElement('video'); video.src = url; video.playsInline = true; video.muted = false; video.volume = 1; video.preload = 'auto'; source = exportAudioContext.createMediaElementSource(video); gain = exportAudioContext.createGain(); source.connect(gain).connect(audioDestination); }
+    await waitForExportVideo(video); return { clip, video, url, gain, sharedStage:isMobileSafari };
+  };
   const items = isMobileSafari ? [] : await Promise.all(clips.map(prepareExportItem));
   const transitionDuration = isMobileSafari ? 0 : .35, mobileFadeDuration = 350; let mobileTransitionFrame = null;
   setExportProgress(5);
   for (let index = 0; index < clips.length && !exportJob.cancelled; index += 1) {
-    const item = isMobileSafari ? await prepareExportItem(clips[index]) : items[index], next = isMobileSafari ? undefined : items[index + 1]; if (isMobileSafari) items.push(item); let nextStarted = false, frame, mobileFadeStartedAt = performance.now(), playbackStartedAt = performance.now();
+    const item = isMobileSafari ? await prepareExportItem(clips[index]) : items[index], next = isMobileSafari ? undefined : items[index + 1]; if (isMobileSafari) items.push(item); let nextStarted = false, frame, mobileFadeStartedAt = 0, playbackStartedAt = performance.now();
     item.gain.gain.value = 1; if (!item.video.currentTime) await item.video.play();
+    mobileFadeStartedAt = performance.now();
     await new Promise(resolve => { const render = () => {
       const remaining = Math.max(0, item.video.duration - item.video.currentTime), progress = nextStarted ? Math.min(1, 1 - remaining / transitionDuration) : 0;
       setExportProgress(5 + ((index + item.video.currentTime / Math.max(item.video.duration, 1)) / clips.length) * 90);
@@ -200,9 +210,10 @@ async function exportVerticalReel() {
       const clipFinished = item.video.ended || (Number.isFinite(item.video.duration) && item.video.currentTime >= item.video.duration - .04) || (isMobileSafari && performance.now() - playbackStartedAt >= expectedPlaybackMs);
       if (exportJob.cancelled || clipFinished) { cancelAnimationFrame(frame); resolve(); } else frame = requestAnimationFrame(render);
     }; render(); });
-    if (isMobileSafari) { if (index < clips.length - 1) { mobileTransitionFrame = document.createElement('canvas'); mobileTransitionFrame.width = canvas.width; mobileTransitionFrame.height = canvas.height; mobileTransitionFrame.getContext('2d').drawImage(canvas, 0, 0); } item.gain.disconnect(); item.video.remove(); URL.revokeObjectURL(item.url); items.pop(); }
+    if (isMobileSafari) { if (index < clips.length - 1) { mobileTransitionFrame = document.createElement('canvas'); mobileTransitionFrame.width = canvas.width; mobileTransitionFrame.height = canvas.height; mobileTransitionFrame.getContext('2d').drawImage(canvas, 0, 0); } URL.revokeObjectURL(item.url); items.pop(); }
   }
   items.forEach(item => { item.gain.disconnect(); item.video.remove(); URL.revokeObjectURL(item.url); });
+  if (mobileExportStage) { mobileExportStage.gain.disconnect(); mobileExportStage.video.pause(); mobileExportStage.video.remove(); }
   if (exportJob.cancelled) { await finishRecorder(); await exportAudioContext.close(); exportJob = null; return; }
   setExportProgress(96); $('#exportStatus').textContent = 'Finishing your reel…';
   const reel = await finishRecorder(); await exportAudioContext.close();
