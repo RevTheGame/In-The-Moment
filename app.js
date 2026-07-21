@@ -175,20 +175,22 @@ async function exportVerticalReel() {
   exportRecorder.ondataavailable = event => { if (event.data.size) parts.push(event.data); }; exportRecorder.start();
   const prepareExportItem = async clip => { const video = document.createElement('video'), url = URL.createObjectURL(clip.blob); video.src = url; video.playsInline = true; video.muted = false; video.volume = 1; video.preload = 'auto'; if (isMobileSafari) { video.className = 'export-video-stage'; document.body.append(video); } await new Promise((resolve, reject) => { video.oncanplay = resolve; video.onerror = reject; }); const source = exportAudioContext.createMediaElementSource(video), gain = exportAudioContext.createGain(); source.connect(gain).connect(audioDestination); return { clip, video, url, gain }; };
   const items = isMobileSafari ? [] : await Promise.all(clips.map(prepareExportItem));
-  const transitionDuration = isMobileSafari ? 0 : .35; setExportProgress(5);
+  const transitionDuration = isMobileSafari ? 0 : .35, mobileFadeDuration = 350; let mobileTransitionFrame = null;
+  setExportProgress(5);
   for (let index = 0; index < clips.length && !exportJob.cancelled; index += 1) {
-    const item = isMobileSafari ? await prepareExportItem(clips[index]) : items[index], next = isMobileSafari ? undefined : items[index + 1]; if (isMobileSafari) items.push(item); let nextStarted = false, frame;
+    const item = isMobileSafari ? await prepareExportItem(clips[index]) : items[index], next = isMobileSafari ? undefined : items[index + 1]; if (isMobileSafari) items.push(item); let nextStarted = false, frame, mobileFadeStartedAt = performance.now();
     item.gain.gain.value = 1; if (!item.video.currentTime) await item.video.play();
     await new Promise(resolve => { const render = () => {
       const remaining = Math.max(0, item.video.duration - item.video.currentTime), progress = nextStarted ? Math.min(1, 1 - remaining / transitionDuration) : 0;
       setExportProgress(5 + ((index + item.video.currentTime / Math.max(item.video.duration, 1)) / items.length) * 90);
       if (next && transitionDuration && !nextStarted && remaining <= transitionDuration) { nextStarted = true; next.gain.gain.value = 0; next.video.play().catch(() => {}); }
       if (nextStarted) { item.gain.gain.value = 1 - progress; next.gain.gain.value = progress; }
-      drawExportFrame(context, canvas, item.video, item.clip, nextStarted ? 1 - progress : 1, true);
+      const mobileFadeProgress = isMobileSafari && mobileTransitionFrame ? Math.min(1, (performance.now() - mobileFadeStartedAt) / mobileFadeDuration) : 1;
+      if (isMobileSafari && mobileTransitionFrame && mobileFadeProgress < 1) { context.drawImage(mobileTransitionFrame, 0, 0); drawExportFrame(context, canvas, item.video, item.clip, mobileFadeProgress, false); } else { mobileTransitionFrame = null; drawExportFrame(context, canvas, item.video, item.clip, nextStarted ? 1 - progress : 1, true); }
       if (nextStarted) drawExportFrame(context, canvas, next.video, next.clip, progress, false);
       if (exportJob.cancelled || item.video.ended) { cancelAnimationFrame(frame); resolve(); } else frame = requestAnimationFrame(render);
     }; render(); });
-    if (isMobileSafari) { item.gain.disconnect(); item.video.remove(); URL.revokeObjectURL(item.url); items.pop(); }
+    if (isMobileSafari) { if (index < clips.length - 1) { mobileTransitionFrame = document.createElement('canvas'); mobileTransitionFrame.width = canvas.width; mobileTransitionFrame.height = canvas.height; mobileTransitionFrame.getContext('2d').drawImage(canvas, 0, 0); } item.gain.disconnect(); item.video.remove(); URL.revokeObjectURL(item.url); items.pop(); }
   }
   items.forEach(item => { item.gain.disconnect(); item.video.remove(); URL.revokeObjectURL(item.url); });
   if (exportJob.cancelled) { if (exportRecorder.state === 'recording') exportRecorder.stop(); await finished; await exportAudioContext.close(); exportJob = null; return; }
