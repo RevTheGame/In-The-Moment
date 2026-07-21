@@ -95,10 +95,17 @@ async function renderReel() {
 }
 async function startPreviewVideo(video) { try { await video.play(); } catch (error) { video.muted = true; video.defaultMuted = true; video.setAttribute('muted', ''); await video.play().catch(() => toast('Video playback is unavailable in this browser.')); } }
 function playMobileSafariReel(clips) {
-  const player = $('#reelPlayer'), video = $('#reelVideo'), waitingVideo = $('#reelVideoNext'), caption = $('#reelPlayerCaption'); let index = 0, currentUrl;
-  player.hidden = false; player.className = `reel-player reel-style-${reelStyle.toLowerCase()}`; video.style.opacity = '1'; waitingVideo.style.opacity = '0'; video.muted = false; video.defaultMuted = false; video.removeAttribute('muted'); video.volume = 1;
-  reelPlayback = { clips, index, activeVideo:video, waitingVideo, total:clips.reduce((total, clip) => total + (clip.duration || 1), 0) }; $('#reelPlayerToggle').textContent = 'Ⅱ'; revealReelControls();
-  const playIndex = () => { const clip = clips[index]; caption.innerHTML = reelStyle === 'Off' ? '' : `<span class="caption-title">${reelStyle === 'Bold' ? challenges[clip.challenge].title.toUpperCase() : challenges[clip.challenge].title}</span><span class="caption-time">${formatTimestamp(clip.capturedAt)}</span>`; if (currentUrl) URL.revokeObjectURL(currentUrl); currentUrl = URL.createObjectURL(clip.blob); video.src = currentUrl; video.load(); video.play().catch(() => { $('#reelPlayerToggle').textContent = '▶'; toast('Tap play to start the reel with sound.'); }); video.onended = () => { if (index === clips.length - 1) { player.hidden = true; reelPlayback = null; return; } index += 1; reelPlayback.index = index; playIndex(); }; };
+  const player = $('#reelPlayer'), caption = $('#reelPlayerCaption'); let activeVideo = $('#reelVideo'), waitingVideo = $('#reelVideoNext'), index = 0, currentUrl, waitingUrl, transitionStarted = false;
+  [activeVideo, waitingVideo].forEach(video => { video.muted = false; video.defaultMuted = false; video.removeAttribute('muted'); video.volume = 1; video.setAttribute('playsinline', ''); video.setAttribute('webkit-playsinline', ''); });
+  player.hidden = false; player.className = `reel-player reel-style-${reelStyle.toLowerCase()}`; activeVideo.style.opacity = '1'; waitingVideo.style.opacity = '0';
+  reelPlayback = { clips, index, activeVideo, waitingVideo, total:clips.reduce((total, clip) => total + (clip.duration || 1), 0) }; $('#reelPlayerToggle').textContent = 'Ⅱ'; revealReelControls();
+  const setCaption = clip => { caption.innerHTML = reelStyle === 'Off' ? '' : `<span class="caption-title">${reelStyle === 'Bold' ? challenges[clip.challenge].title.toUpperCase() : challenges[clip.challenge].title}</span><span class="caption-time">${formatTimestamp(clip.capturedAt)}</span>`; };
+  const begin = video => video.play().catch(() => { $('#reelPlayerToggle').textContent = '▶'; toast('Tap play to start the reel with sound.'); });
+  const startTransition = () => { if (transitionStarted || index === clips.length - 1) return; transitionStarted = true; waitingUrl = URL.createObjectURL(clips[index + 1].blob); waitingVideo.src = waitingUrl; waitingVideo.load(); begin(waitingVideo); waitingVideo.style.opacity = '1'; activeVideo.style.opacity = '0'; };
+  const playIndex = (alreadyPlaying = false) => { const clip = clips[index]; transitionStarted = false; setCaption(clip); if (!alreadyPlaying) { if (currentUrl) URL.revokeObjectURL(currentUrl); currentUrl = URL.createObjectURL(clip.blob); activeVideo.src = currentUrl; activeVideo.load(); begin(activeVideo); }
+    activeVideo.ontimeupdate = () => { if (Number.isFinite(activeVideo.duration) && activeVideo.duration - activeVideo.currentTime <= .35) startTransition(); };
+    activeVideo.onended = () => { if (index === clips.length - 1) { player.hidden = true; reelPlayback = null; return; } if (!transitionStarted) { index += 1; reelPlayback.index = index; playIndex(); return; } const oldUrl = currentUrl, oldVideo = activeVideo; activeVideo = waitingVideo; waitingVideo = oldVideo; currentUrl = waitingUrl; waitingUrl = null; oldVideo.pause(); oldVideo.style.opacity = '0'; activeVideo.style.opacity = '1'; index += 1; reelPlayback.index = index; reelPlayback.activeVideo = activeVideo; reelPlayback.waitingVideo = waitingVideo; URL.revokeObjectURL(oldUrl); playIndex(true); };
+  };
   playIndex();
 }
 async function playReel(startIndex = 0, startTime = 0, autoPlay = true) {
@@ -181,6 +188,7 @@ async function exportVerticalReel() {
     }
     return Promise.race([finished, new Promise(resolve => setTimeout(() => resolve(new Blob(parts, { type: exportRecorder.mimeType })), 3500))]);
   };
+  const startExportVideo = async video => { try { const started = video.play(); await Promise.race([started.catch(() => {}), new Promise(resolve => setTimeout(resolve, 1200))]); } catch (_) { /* Continue with Safari's duration fallback. */ } };
   let mobileExportStage;
   const waitForExportVideo = video => new Promise((resolve, reject) => { let settled = false; const finish = () => { if (!settled) { settled = true; resolve(); } }; video.onloadeddata = finish; video.oncanplay = finish; video.onerror = () => { if (!settled) { settled = true; reject(new Error('Could not load this clip.')); } }; if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) finish(); setTimeout(finish, 5000); });
   const prepareExportItem = async clip => {
@@ -196,17 +204,17 @@ async function exportVerticalReel() {
   setExportProgress(5);
   for (let index = 0; index < clips.length && !exportJob.cancelled; index += 1) {
     const item = isMobileSafari ? await prepareExportItem(clips[index]) : items[index], next = isMobileSafari ? undefined : items[index + 1]; if (isMobileSafari) items.push(item); let nextStarted = false, frame, mobileFadeStartedAt = 0, playbackStartedAt = performance.now();
-    item.gain.gain.value = 1; if (!item.video.currentTime) await item.video.play();
+    item.gain.gain.value = 1; if (!item.video.currentTime) await startExportVideo(item.video);
     mobileFadeStartedAt = performance.now();
     await new Promise(resolve => { const render = () => {
       const remaining = Math.max(0, item.video.duration - item.video.currentTime), progress = nextStarted ? Math.min(1, 1 - remaining / transitionDuration) : 0;
-      setExportProgress(5 + ((index + item.video.currentTime / Math.max(item.video.duration, 1)) / clips.length) * 90);
+      const expectedPlaybackMs = Math.max(3000, (Number.isFinite(item.video.duration) ? item.video.duration * 1000 : 0) + 2000), elapsedProgress = Math.min(1, (performance.now() - playbackStartedAt) / expectedPlaybackMs), clipProgress = Math.max(item.video.currentTime / Math.max(item.video.duration, 1), elapsedProgress);
+      setExportProgress(5 + ((index + clipProgress) / clips.length) * 90);
       if (next && transitionDuration && !nextStarted && remaining <= transitionDuration) { nextStarted = true; next.gain.gain.value = 0; next.video.play().catch(() => {}); }
       if (nextStarted) { item.gain.gain.value = 1 - progress; next.gain.gain.value = progress; }
       const mobileFadeProgress = isMobileSafari && mobileTransitionFrame ? Math.min(1, (performance.now() - mobileFadeStartedAt) / mobileFadeDuration) : 1;
       if (isMobileSafari && mobileTransitionFrame && mobileFadeProgress < 1) { context.drawImage(mobileTransitionFrame, 0, 0); drawExportFrame(context, canvas, item.video, item.clip, mobileFadeProgress, false); } else { mobileTransitionFrame = null; drawExportFrame(context, canvas, item.video, item.clip, nextStarted ? 1 - progress : 1, true); }
       if (nextStarted) drawExportFrame(context, canvas, next.video, next.clip, progress, false);
-      const expectedPlaybackMs = Math.max(3000, (Number.isFinite(item.video.duration) ? item.video.duration * 1000 : 0) + 2000);
       const clipFinished = item.video.ended || (Number.isFinite(item.video.duration) && item.video.currentTime >= item.video.duration - .04) || (isMobileSafari && performance.now() - playbackStartedAt >= expectedPlaybackMs);
       if (exportJob.cancelled || clipFinished) { cancelAnimationFrame(frame); resolve(); } else frame = requestAnimationFrame(render);
     }; render(); });
