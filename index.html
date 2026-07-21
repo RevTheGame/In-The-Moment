@@ -18,11 +18,12 @@
       </header>
 
       <section class="home-screen screen active" id="home">
-        <div class="eyebrow">TUESDAY, JULY 14</div>
+        <div class="eyebrow" id="todayDate"></div>
         <h1>Make an ordinary<br>moment <i>iconic.</i></h1>
         <p class="intro">Today’s tiny missions are waiting for the perfect opening. Capture the real thing.</p>
 
         <div class="progress-row"><span><b id="completeCount">0</b> of 3 moments found</span><div class="progress-track"><i id="progressFill"></i></div></div>
+        <p class="daily-reset">New challenges arrive every day at 9:00 AM local time.</p>
 
         <div class="challenge-list" id="challengeList"></div>
         <button class="primary-button compilation-button" id="compilationButton" disabled>
@@ -71,7 +72,7 @@
         <div class="eyebrow">YOUR DAY, IN MOMENTS</div>
         <h2>A little more<br><i>you.</i></h2>
         <div class="reel-card">
-          <div class="reel-header"><span>IN THE MOMENT</span><span>JUL 14, 2026</span></div>
+          <div class="reel-header"><span>IN THE MOMENT</span><span id="reelDate"></span></div>
           <div class="reel-clips" id="reelClips"></div>
           <div class="reel-player" id="reelPlayer" hidden>
             <video id="reelVideo" class="reel-player-video" playsinline></video>
@@ -101,7 +102,7 @@
         <button class="primary-button" id="cancelExport">Cancel export <span>×</span></button>
       </section>
     </main>
-    <nav class="bottom-nav"><a class="nav-active" href="#home">Today</a><a href="#reel">My reels</a><a href="#settings">Settings</a></nav>
+    <nav class="bottom-nav"><a class="nav-active" href="#home">Today</a><a href="#reel">My reels</a></nav>
     <div class="toast" id="toast" role="status"></div>
     <div class="export-sheet" id="exportSheet" hidden>
       <button class="sheet-scrim" id="closeExportSheet" aria-label="Close export options"></button>

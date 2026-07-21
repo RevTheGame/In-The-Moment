@@ -1,19 +1,28 @@
-const today = new Date().toLocaleDateString('en-CA');
-const shuffle = list => [...list].sort(() => Math.random() - .5);
-const savedSelection = JSON.parse(localStorage.getItem(`itm-selection-${today}`) || 'null');
-const challenges = savedSelection ? savedSelection.map(id => challengeCatalog.find(challenge => challenge.id === id)).filter(Boolean) : shuffle(['Random', 'Beautiful', 'Funny'].map(vibe => { const matches = challengeCatalog.filter(challenge => challenge.vibe === vibe); return matches[Math.floor(Math.random() * matches.length)]; }));
-if (!savedSelection) localStorage.setItem(`itm-selection-${today}`, JSON.stringify(challenges.map(challenge => challenge.id)));
+function getDailyKey(date = new Date()) { const dailyDate = new Date(date); if (dailyDate.getHours() < 9) dailyDate.setDate(dailyDate.getDate() - 1); return dailyDate.toLocaleDateString('en-CA'); }
+const today = getDailyKey();
+const dateSeed = [...today].reduce((seed, character) => (seed * 31 + character.charCodeAt(0)) >>> 0, 0);
+const dailyRandom = (() => { let seed = dateSeed || 1; return () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296); })();
+const dailyShuffle = list => [...list].sort(() => dailyRandom() - .5);
+const challenges = dailyShuffle(['Random', 'Beautiful', 'Funny'].map(vibe => { const matches = challengeCatalog.filter(challenge => challenge.vibe === vibe); return matches[Math.floor(dailyRandom() * matches.length)]; }));
 
 let current = 0, completed = [], stream, recorder, chunks = [], startTime, timerId, lastBlob, lastDuration = 0, reelUrls = [], recordingAudioContext, recordingAudioDestination, microphoneSource, reelStyle = 'Minimal', cameraFacing = 'environment', reelPlayback, exportJob;
+let sessionClips = [];
 const $ = selector => document.querySelector(selector);
+const now = new Date();
+$('#todayDate').textContent = now.toLocaleDateString([], { weekday:'long', month:'long', day:'numeric' }).toUpperCase();
+$('#reelDate').textContent = now.toLocaleDateString([], { month:'short', day:'numeric', year:'numeric' }).toUpperCase();
+function refreshForNewDay() { window.location.hash = 'home'; window.location.reload(); }
+function scheduleDailyRefresh() { const nextDay = new Date(); nextDay.setHours(9, 0, 1, 0); if (nextDay <= new Date()) nextDay.setDate(nextDay.getDate() + 1); setTimeout(refreshForNewDay, nextDay - Date.now()); }
+scheduleDailyRefresh();
+document.addEventListener('visibilitychange', () => { if (!document.hidden && getDailyKey() !== today) refreshForNewDay(); });
 const clipDatabase = new Promise((resolve, reject) => {
   const request = indexedDB.open('in-the-moment', 1);
   request.onupgradeneeded = () => request.result.createObjectStore('clips', { keyPath: 'challenge' });
   request.onsuccess = () => resolve(request.result);
   request.onerror = () => reject(request.error);
 });
-function getClips() { return clipDatabase.then(database => new Promise((resolve, reject) => { const request = database.transaction('clips').objectStore('clips').getAll(); request.onsuccess = () => resolve(request.result.filter(clip => clip.day === today)); request.onerror = () => reject(request.error); })); }
-function saveClip(clip) { return clipDatabase.then(database => new Promise((resolve, reject) => { const request = database.transaction('clips', 'readwrite').objectStore('clips').put(clip); request.onsuccess = () => resolve(); request.onerror = () => reject(request.error); })); }
+async function getClips() { try { const storedClips = await clipDatabase.then(database => new Promise((resolve, reject) => { const request = database.transaction('clips').objectStore('clips').getAll(); request.onsuccess = () => resolve(request.result.filter(clip => clip.day === today)); request.onerror = () => reject(request.error); })); const fallbackClips = sessionClips.filter(clip => clip.day === today && !storedClips.some(item => item.challenge === clip.challenge)); return [...storedClips, ...fallbackClips]; } catch (error) { return sessionClips.filter(clip => clip.day === today); } }
+async function saveClip(clip) { try { await clipDatabase.then(database => new Promise((resolve, reject) => { const request = database.transaction('clips', 'readwrite').objectStore('clips').put(clip); request.onsuccess = () => resolve(); request.onerror = () => reject(request.error); })); } catch (error) { sessionClips = [...sessionClips.filter(item => item.challenge !== clip.challenge || item.day !== clip.day), clip]; } }
 function show(id) { document.querySelectorAll('.screen').forEach(screen => screen.classList.remove('active')); $(id).classList.add('active'); window.scrollTo(0, 0); }
 function toast(message) { const notification = $('#toast'); notification.textContent = message; notification.classList.add('show'); setTimeout(() => notification.classList.remove('show'), 2200); }
 function formatted(seconds) { return `00:${String(seconds).padStart(2, '0')}`; }
@@ -65,7 +74,7 @@ function displayReview() {
   if (lastBlob?.size) { video.src = URL.createObjectURL(lastBlob); video.style.display = 'block'; $('#reviewPlaceholder').style.display = 'none'; }
   show('#review'); $('#recordButton').classList.remove('is-recording'); $('#recordLabel').textContent = 'TAP TO RECORD'; $('#soundTrigger').disabled = true; startTime = null;
 }
-async function saveMoment() { if (!lastBlob?.size) return toast('No video was captured. Try recording again.'); await saveClip({ challenge: current, day: today, blob: lastBlob, duration: lastDuration, capturedAt: new Date().toISOString() }); await refreshCompleted(); toast('Video saved to your reel'); show('#home'); }
+async function saveMoment() { if (!lastBlob?.size) return toast('No video was captured. Try recording again.'); const button = $('#saveMoment'), originalLabel = button.innerHTML; button.disabled = true; button.textContent = 'Adding to your reel…'; try { await saveClip({ challenge: current, day: today, blob: lastBlob, duration: lastDuration, capturedAt: new Date().toISOString() }); await refreshCompleted(); toast('Video saved to your reel'); show('#home'); } catch (error) { toast('Could not save this clip. Please try again.'); } finally { button.disabled = false; button.innerHTML = originalLabel; } }
 
 async function renderReel() {
   stopReelPlayback();
