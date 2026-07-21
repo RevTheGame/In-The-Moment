@@ -5,7 +5,7 @@ const dailyRandom = (() => { let seed = dateSeed || 1; return () => ((seed = (se
 const dailyShuffle = list => [...list].sort(() => dailyRandom() - .5);
 const challenges = dailyShuffle(['Random', 'Beautiful', 'Funny'].map(vibe => { const matches = challengeCatalog.filter(challenge => challenge.vibe === vibe); return matches[Math.floor(dailyRandom() * matches.length)]; }));
 
-let current = 0, completed = [], stream, recorder, chunks = [], startTime, timerId, lastBlob, lastDuration = 0, reelUrls = [], cachedReelClips = [], recordingAudioContext, recordingAudioDestination, microphoneSource, micGain, reelStyle = 'Minimal', cameraFacing = 'environment', reelPlayback, exportJob, reelControlsTimer, randomSoundTimer;
+let current = 0, completed = [], stream, recorder, chunks = [], micRecorder, micChunks = [], micStopPromise = Promise.resolve(), startTime, timerId, lastBlob, lastMicBlob, lastDuration = 0, reelUrls = [], cachedReelClips = [], recordingAudioContext, recordingAudioDestination, microphoneSource, micGain, reelStyle = 'Minimal', cameraFacing = 'environment', reelPlayback, exportJob, reelControlsTimer, randomSoundTimer, reviewVideoUrl;
 let sessionClips = [];
 const soundBufferCache = new Map();
 let soundSettings = { randomSoundPlay:false, randomSounds:false, fxVolume:'medium', micVolume:'on', ...JSON.parse(localStorage.getItem('itm-sound-settings') || '{}') };
@@ -26,6 +26,7 @@ const clipDatabase = new Promise((resolve, reject) => {
 });
 async function getClips() { try { const storedClips = await clipDatabase.then(database => new Promise((resolve, reject) => { const request = database.transaction('clips').objectStore('clips').getAll(); request.onsuccess = () => resolve(request.result.filter(clip => clip.day === today)); request.onerror = () => reject(request.error); })); const fallbackClips = sessionClips.filter(clip => clip.day === today && !storedClips.some(item => item.challenge === clip.challenge)); return [...storedClips, ...fallbackClips]; } catch (error) { return sessionClips.filter(clip => clip.day === today); } }
 async function saveClip(clip) { try { await clipDatabase.then(database => new Promise((resolve, reject) => { const request = database.transaction('clips', 'readwrite').objectStore('clips').put(clip); request.onsuccess = () => resolve(); request.onerror = () => reject(request.error); })); } catch (error) { sessionClips = [...sessionClips.filter(item => item.challenge !== clip.challenge || item.day !== clip.day), clip]; } }
+async function deleteAllRecordings() { if (!window.confirm('Delete every saved recording? This cannot be undone.')) return; stopReelPlayback(); sessionClips = []; cachedReelClips = []; completed = []; lastBlob = null; if (reviewVideoUrl) URL.revokeObjectURL(reviewVideoUrl); reelUrls.forEach(URL.revokeObjectURL); reelUrls = []; try { const database = await clipDatabase; await new Promise((resolve, reject) => { const request = database.transaction('clips', 'readwrite').objectStore('clips').clear(); request.onsuccess = () => resolve(); request.onerror = () => reject(request.error); }); database.close(); } catch (_) { /* Session-only clips were already cleared. */ } window.location.hash = 'home'; window.location.reload(); }
 function show(id) { document.querySelectorAll('.screen').forEach(screen => screen.classList.remove('active')); $(id).classList.add('active'); window.scrollTo(0, 0); }
 function toast(message) { const notification = $('#toast'); notification.textContent = message; notification.classList.add('show'); setTimeout(() => notification.classList.remove('show'), 2200); }
 function formatted(seconds) { return `00:${String(seconds).padStart(2, '0')}`; }
@@ -41,15 +42,15 @@ function renderChallenges() {
 }
 function openChallenge(index) { current = index; const challenge = challenges[index]; $('#orbEmoji').textContent = challenge.icon; $('#soundOrb').style.background = challenge.color; $('#challengeNumber').textContent = `MOMENT 0${index + 1}`; $('#challengeTitle').textContent = challenge.title; $('#challengePrompt').textContent = challenge.prompt; show('#challenge'); }
 function persistSoundSettings() { localStorage.setItem('itm-sound-settings', JSON.stringify(soundSettings)); renderSoundSettings(); }
-function renderSoundSettings() { $('#randomSoundPlay').classList.toggle('active', soundSettings.randomSoundPlay); $('#randomSoundPlay').setAttribute('aria-pressed', String(soundSettings.randomSoundPlay)); $('#randomSounds').classList.toggle('active', soundSettings.randomSounds); $('#randomSounds').setAttribute('aria-pressed', String(soundSettings.randomSounds)); document.querySelectorAll('#fxVolume button').forEach(button => button.classList.toggle('active', button.dataset.value === soundSettings.fxVolume)); document.querySelectorAll('#micVolume button').forEach(button => button.classList.toggle('active', button.dataset.value === soundSettings.micVolume)); }
+function renderSoundSettings() { $('#randomSoundPlay').classList.toggle('active', soundSettings.randomSoundPlay); $('#randomSoundPlay').setAttribute('aria-pressed', String(soundSettings.randomSoundPlay)); $('#randomSounds').classList.toggle('active', soundSettings.randomSounds); $('#randomSounds').setAttribute('aria-pressed', String(soundSettings.randomSounds)); $('#micOnExport').classList.toggle('active', soundSettings.micVolume === 'on'); $('#micOnExport').setAttribute('aria-pressed', String(soundSettings.micVolume === 'on')); document.querySelectorAll('#fxVolume button').forEach(button => button.classList.toggle('active', button.dataset.value === soundSettings.fxVolume)); }
 function soundForPlayback() { if (!soundSettings.randomSounds) return challenges[current]; const key = `itm-used-sounds-${today}`, used = JSON.parse(localStorage.getItem(key) || '[]'), available = challengeCatalog.filter(challenge => !used.includes(challenge.soundPath)), choice = available[Math.floor(Math.random() * available.length)] || challengeCatalog[Math.floor(Math.random() * challengeCatalog.length)]; localStorage.setItem(key, JSON.stringify([...used, choice.soundPath])); return choice; }
 function prepareRecordingAudio() {
   const AudioContext = window.AudioContext || window.webkitAudioContext;
   recordingAudioContext = new AudioContext(); recordingAudioContext.resume();
   recordingAudioDestination = recordingAudioContext.createMediaStreamDestination();
-  if (stream.getAudioTracks().length && soundSettings.micVolume === 'on') { microphoneSource = recordingAudioContext.createMediaStreamSource(stream); micGain = recordingAudioContext.createGain(); micGain.gain.value = 1; microphoneSource.connect(micGain).connect(recordingAudioDestination); }
   return new MediaStream([...stream.getVideoTracks(), ...recordingAudioDestination.stream.getAudioTracks()]);
 }
+function startMicCapture() { lastMicBlob = null; micChunks = []; if (!stream?.getAudioTracks().length) return; try { micRecorder = new MediaRecorder(new MediaStream(stream.getAudioTracks())); micStopPromise = new Promise(resolve => { micRecorder.ondataavailable = event => { if (event.data.size) micChunks.push(event.data); }; micRecorder.onstop = () => { lastMicBlob = micChunks.length ? new Blob(micChunks, { type: micRecorder.mimeType || 'audio/webm' }) : null; resolve(); }; micRecorder.start(); }); } catch (_) { micRecorder = null; micStopPromise = Promise.resolve(); } }
 async function loadSoundBuffer(soundPath) { if (!soundBufferCache.has(soundPath)) soundBufferCache.set(soundPath, fetch(encodeURI(soundPath)).then(response => { if (!response.ok) throw new Error('Sound unavailable'); return response.arrayBuffer(); }).then(data => recordingAudioContext.decodeAudioData(data))); return soundBufferCache.get(soundPath); }
 async function playSound(isScheduledSound = false) {
   if (!recordingAudioContext || !recordingAudioDestination) return;
@@ -74,16 +75,16 @@ function startRecording() {
   if (!stream) return toast('Please allow camera access before recording.');
   chunks = []; startTime = Date.now(); $('#recordButton').classList.add('is-recording'); $('#recordLabel').textContent = 'RECORDING — TAP TO FINISH'; $('#soundTrigger').disabled = soundSettings.randomSoundPlay; $('#soundTrigger span:last-child').textContent = soundSettings.randomSoundPlay ? 'Sound incoming…' : 'Play the sound';
   timerId = setInterval(() => $('#timer').textContent = formatted(Math.floor((Date.now() - startTime) / 1000)), 250);
-  try { const recordingStream = prepareRecordingAudio(); recorder = new MediaRecorder(recordingStream); recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); }; recorder.onstop = () => { lastBlob = new Blob(chunks, { type: recorder.mimeType || 'video/webm' }); recorder = null; displayReview(); }; recorder.start(); if (soundSettings.randomSoundPlay) randomSoundTimer = setTimeout(() => { if (startTime) playSound(true); }, (3 + Math.random() * 4) * 1000); } catch (error) { clearInterval(timerId); startTime = null; toast('This browser cannot save camera recordings.'); }
+  try { const recordingStream = prepareRecordingAudio(); startMicCapture(); recorder = new MediaRecorder(recordingStream); recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); }; recorder.onstop = async () => { lastBlob = new Blob(chunks, { type: recorder.mimeType || 'video/webm' }); recorder = null; await micStopPromise; displayReview(); }; recorder.start(); if (soundSettings.randomSoundPlay) randomSoundTimer = setTimeout(() => { if (startTime) playSound(true); }, (3 + Math.random() * 4) * 1000); } catch (error) { clearInterval(timerId); startTime = null; toast('This browser cannot save camera recordings.'); }
 }
-function stopRecording() { if (!startTime) return; clearInterval(timerId); clearTimeout(randomSoundTimer); lastDuration = Math.max(1, Math.floor((Date.now() - startTime) / 1000)); $('#clipDuration').textContent = formatted(lastDuration); if (recorder && recorder.state !== 'inactive') recorder.stop(); else displayReview(); }
+function stopRecording() { if (!startTime) return; clearInterval(timerId); clearTimeout(randomSoundTimer); lastDuration = Math.max(1, Math.floor((Date.now() - startTime) / 1000)); $('#clipDuration').textContent = formatted(lastDuration); if (micRecorder?.state !== 'inactive') micRecorder.stop(); if (recorder && recorder.state !== 'inactive') recorder.stop(); else displayReview(); }
 function displayReview() {
   clearTimeout(randomSoundTimer); stream?.getTracks().forEach(track => track.stop()); stream = null; recordingAudioContext?.close(); recordingAudioContext = recordingAudioDestination = microphoneSource = micGain = null;
-  const video = $('#reviewVideo'); video.style.display = 'none'; $('#reviewPlaceholder').style.display = 'grid';
-  if (lastBlob?.size) { video.src = URL.createObjectURL(lastBlob); video.style.display = 'block'; $('#reviewPlaceholder').style.display = 'none'; }
+  const video = $('#reviewVideo'); video.pause(); if (reviewVideoUrl) URL.revokeObjectURL(reviewVideoUrl); reviewVideoUrl = null; video.removeAttribute('src'); video.load(); video.style.display = 'none'; $('#reviewPlaceholder').style.display = 'grid';
+  if (lastBlob?.size) { reviewVideoUrl = URL.createObjectURL(lastBlob); video.src = reviewVideoUrl; video.load(); video.style.display = 'block'; $('#reviewPlaceholder').style.display = 'none'; }
   show('#review'); $('#recordButton').classList.remove('is-recording'); $('#recordLabel').textContent = 'TAP TO RECORD'; $('#soundTrigger').disabled = true; startTime = null;
 }
-async function saveMoment() { if (!lastBlob?.size) return toast('No video was captured. Try recording again.'); const button = $('#saveMoment'), originalLabel = button.innerHTML; button.disabled = true; button.textContent = 'Adding to your reel…'; try { await saveClip({ challenge: current, day: today, blob: lastBlob, duration: lastDuration, capturedAt: new Date().toISOString() }); await refreshCompleted(); toast('Video saved to your reel'); show('#home'); } catch (error) { toast('Could not save this clip. Please try again.'); } finally { button.disabled = false; button.innerHTML = originalLabel; } }
+async function saveMoment() { if (!lastBlob?.size) return toast('No video was captured. Try recording again.'); const button = $('#saveMoment'), originalLabel = button.innerHTML; button.disabled = true; button.textContent = 'Adding to your reel…'; try { await micStopPromise; await saveClip({ challenge: current, day: today, blob: lastBlob, micBlob: lastMicBlob, duration: lastDuration, capturedAt: new Date().toISOString() }); cachedReelClips = []; await refreshCompleted(); toast('Video saved to your reel'); show('#home'); } catch (error) { toast('Could not save this clip. Please try again.'); } finally { button.disabled = false; button.innerHTML = originalLabel; } }
 
 async function renderReel() {
   stopReelPlayback();
@@ -94,23 +95,18 @@ async function renderReel() {
   $('#reelPlayer').hidden = true;
 }
 async function startPreviewVideo(video) { try { await video.play(); } catch (error) { video.muted = true; video.defaultMuted = true; video.setAttribute('muted', ''); await video.play().catch(() => toast('Video playback is unavailable in this browser.')); } }
-function playMobileSafariReel(clips) {
-  const player = $('#reelPlayer'), caption = $('#reelPlayerCaption'); let activeVideo = $('#reelVideo'), waitingVideo = $('#reelVideoNext'), index = 0, currentUrl, waitingUrl, transitionStarted = false;
-  [activeVideo, waitingVideo].forEach(video => { video.muted = false; video.defaultMuted = false; video.removeAttribute('muted'); video.volume = 1; video.setAttribute('playsinline', ''); video.setAttribute('webkit-playsinline', ''); });
-  player.hidden = false; player.className = `reel-player reel-style-${reelStyle.toLowerCase()}`; activeVideo.style.opacity = '1'; waitingVideo.style.opacity = '0';
-  reelPlayback = { clips, index, activeVideo, waitingVideo, total:clips.reduce((total, clip) => total + (clip.duration || 1), 0) }; $('#reelPlayerToggle').textContent = 'Ⅱ'; revealReelControls();
-  const setCaption = clip => { caption.innerHTML = reelStyle === 'Off' ? '' : `<span class="caption-title">${reelStyle === 'Bold' ? challenges[clip.challenge].title.toUpperCase() : challenges[clip.challenge].title}</span><span class="caption-time">${formatTimestamp(clip.capturedAt)}</span>`; };
-  const begin = video => video.play().catch(() => { $('#reelPlayerToggle').textContent = '▶'; toast('Tap play to start the reel with sound.'); });
-  const startTransition = () => { if (transitionStarted || index === clips.length - 1) return; transitionStarted = true; waitingUrl = URL.createObjectURL(clips[index + 1].blob); waitingVideo.src = waitingUrl; waitingVideo.load(); begin(waitingVideo); waitingVideo.style.opacity = '1'; activeVideo.style.opacity = '0'; };
-  const playIndex = (alreadyPlaying = false) => { const clip = clips[index]; transitionStarted = false; setCaption(clip); if (!alreadyPlaying) { if (currentUrl) URL.revokeObjectURL(currentUrl); currentUrl = URL.createObjectURL(clip.blob); activeVideo.src = currentUrl; activeVideo.load(); begin(activeVideo); }
-    activeVideo.ontimeupdate = () => { if (Number.isFinite(activeVideo.duration) && activeVideo.duration - activeVideo.currentTime <= .35) startTransition(); };
-    activeVideo.onended = () => { if (index === clips.length - 1) { player.hidden = true; reelPlayback = null; return; } if (!transitionStarted) { index += 1; reelPlayback.index = index; playIndex(); return; } const oldUrl = currentUrl, oldVideo = activeVideo; activeVideo = waitingVideo; waitingVideo = oldVideo; currentUrl = waitingUrl; waitingUrl = null; oldVideo.pause(); oldVideo.style.opacity = '0'; activeVideo.style.opacity = '1'; index += 1; reelPlayback.index = index; reelPlayback.activeVideo = activeVideo; reelPlayback.waitingVideo = waitingVideo; URL.revokeObjectURL(oldUrl); playIndex(true); };
-  };
+function playMobileSafariReel(clips, startIndex = 0) {
+  const player = $('#reelPlayer'), video = $('#reelVideo'), waitingVideo = $('#reelVideoNext'), caption = $('#reelPlayerCaption'); let index = startIndex, currentUrl, micAudio, micUrl;
+  waitingVideo.pause(); waitingVideo.removeAttribute('src'); waitingVideo.load(); video.muted = false; video.defaultMuted = false; video.removeAttribute('muted'); video.volume = 1; video.setAttribute('playsinline', ''); video.setAttribute('webkit-playsinline', '');
+  player.hidden = false; player.className = `reel-player reel-style-${reelStyle.toLowerCase()}`; video.style.opacity = '1'; waitingVideo.style.opacity = '0';
+  reelPlayback = { clips, index, activeVideo:video, waitingVideo, total:clips.reduce((total, clip) => total + (clip.duration || 1), 0) }; $('#reelPlayerToggle').textContent = 'Ⅱ'; revealReelControls();
+  const stopMic = () => { micAudio?.pause(); if (micUrl) URL.revokeObjectURL(micUrl); micAudio = null; micUrl = null; };
+  const playIndex = () => { const clip = clips[index]; caption.innerHTML = reelStyle === 'Off' ? '' : `<span class="caption-title">${reelStyle === 'Bold' ? challenges[clip.challenge].title.toUpperCase() : challenges[clip.challenge].title}</span><span class="caption-time">${formatTimestamp(clip.capturedAt)}</span>`; stopMic(); if (currentUrl) URL.revokeObjectURL(currentUrl); currentUrl = URL.createObjectURL(clip.blob); video.src = currentUrl; video.load(); if (soundSettings.micVolume === 'on' && clip.micBlob) { micUrl = URL.createObjectURL(clip.micBlob); micAudio = new Audio(micUrl); micAudio.play().catch(() => {}); reelPlayback.micAudio = micAudio; } video.play().catch(() => { $('#reelPlayerToggle').textContent = '▶'; toast('Tap play to start the reel with sound.'); }); video.onseeked = () => { if (micAudio) micAudio.currentTime = video.currentTime; }; video.onended = () => { stopMic(); if (index === clips.length - 1) { player.hidden = true; reelPlayback = null; return; } index += 1; reelPlayback.index = index; playIndex(); }; };
   playIndex();
 }
 async function playReel(startIndex = 0, startTime = 0, autoPlay = true) {
   const clips = cachedReelClips.length ? cachedReelClips : (await getClips()).sort((a, b) => a.challenge - b.challenge); if (!clips.length) return toast('Record a moment first.');
-  if (isMobileSafari) return playMobileSafariReel(clips);
+  return playMobileSafariReel(clips, startIndex);
   const player = $('#reelPlayer'), caption = $('#reelPlayerCaption'); let activeVideo = $('#reelVideo'), waitingVideo = $('#reelVideoNext'), index = startIndex, currentUrl, waitingUrl, initialTime = startTime;
   player.hidden = false; player.className = `reel-player reel-style-${reelStyle.toLowerCase()}`; activeVideo.style.opacity = '1'; waitingVideo.style.opacity = '0';
   reelPlayback = { clips, index, activeVideo, waitingVideo, total: clips.reduce((total, clip) => total + (clip.duration || 1), 0) }; $('#reelPlayerToggle').textContent = 'Ⅱ'; revealReelControls();
@@ -134,7 +130,7 @@ async function playReel(startIndex = 0, startTime = 0, autoPlay = true) {
   playClip();
 }
 function revealReelControls() { const player = $('#reelPlayer'); clearTimeout(reelControlsTimer); player.classList.add('show-controls'); reelControlsTimer = setTimeout(() => { if (reelPlayback && !reelPlayback.activeVideo.paused) player.classList.remove('show-controls'); }, 1400); }
-function stopReelPlayback() { if (!reelPlayback) return; clearTimeout(reelControlsTimer); reelPlayback.activeVideo.pause(); reelPlayback.waitingVideo.pause(); $('#reelPlayer').hidden = true; $('#reelPlayer').classList.remove('show-controls'); $('#reelPlayerToggle').textContent = '▶'; reelPlayback = null; }
+function stopReelPlayback() { if (!reelPlayback) return; clearTimeout(reelControlsTimer); reelPlayback.activeVideo.pause(); reelPlayback.waitingVideo.pause(); reelPlayback.micAudio?.pause(); $('#reelPlayer').hidden = true; $('#reelPlayer').classList.remove('show-controls'); $('#reelPlayerToggle').textContent = '▶'; reelPlayback = null; }
 function pauseReelPlayback() { if (!reelPlayback) return; reelPlayback.activeVideo.pause(); reelPlayback.waitingVideo.pause(); $('#reelPlayerToggle').textContent = '▶'; revealReelControls(); }
 function toggleReelPlayback() { if (!reelPlayback) return playReel(); const activeVideo = reelPlayback.activeVideo, paused = activeVideo.paused, resume = video => isMobileSafari ? video.play() : startPreviewVideo(video); if (paused) { resume(activeVideo).catch(() => toast('Tap play to resume with sound.')); if (reelPlayback.waitingVideo.src && reelPlayback.waitingVideo.style.opacity === '1') resume(reelPlayback.waitingVideo); } else { activeVideo.pause(); reelPlayback.waitingVideo.pause(); } $('#reelPlayerToggle').textContent = paused ? 'Ⅱ' : '▶'; revealReelControls(); }
 
@@ -145,7 +141,7 @@ $('#flipCamera').onclick = flipCamera;
 $('#compilationButton').onclick = async () => { await renderReel(); show('#reel'); }; $('#reelPlay').onclick = () => playReel();
 $('#reelPlayer').onclick = event => { if (event.target === $('#reelRewind')) return; toggleReelPlayback(); };
 $('#reelPlayerToggle').onclick = event => { event.stopPropagation(); toggleReelPlayback(); };
-$('#reelRewind').onclick = event => { event.stopPropagation(); if (!reelPlayback) return; reelPlayback.waitingVideo.pause(); reelPlayback.waitingVideo.style.opacity = '0'; reelPlayback.activeVideo.currentTime = 0; revealReelControls(); };
+$('#reelRewind').onclick = event => { event.stopPropagation(); if (!reelPlayback) return; stopReelPlayback(); playReel(0, 0, true); };
 $('#cancelExport').onclick = cancelCurrentExport;
 function closeExportSheet() { $('#exportSheet').hidden = true; }
 async function shareReel() {
@@ -192,35 +188,36 @@ async function exportVerticalReel() {
   let mobileExportStage;
   const waitForExportVideo = video => new Promise((resolve, reject) => { let settled = false; const finish = () => { if (!settled) { settled = true; resolve(); } }; video.onloadeddata = finish; video.oncanplay = finish; video.onerror = () => { if (!settled) { settled = true; reject(new Error('Could not load this clip.')); } }; if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) finish(); setTimeout(finish, 5000); });
   const prepareExportItem = async clip => {
-    const url = URL.createObjectURL(clip.blob); let video, source, gain;
+    const url = URL.createObjectURL(clip.blob); let video, source, gain, mic, micUrl, micSource, micGain;
     if (isMobileSafari) {
       if (!mobileExportStage) { video = document.createElement('video'); video.className = 'export-video-stage'; video.playsInline = true; video.preload = 'auto'; video.muted = false; video.volume = 1; document.body.append(video); source = exportAudioContext.createMediaElementSource(video); gain = exportAudioContext.createGain(); source.connect(gain).connect(audioDestination); mobileExportStage = { video, source, gain }; }
       ({ video, source, gain } = mobileExportStage); video.pause(); video.removeAttribute('src'); video.load(); video.src = url; video.load();
     } else { video = document.createElement('video'); video.src = url; video.playsInline = true; video.muted = false; video.volume = 1; video.preload = 'auto'; source = exportAudioContext.createMediaElementSource(video); gain = exportAudioContext.createGain(); source.connect(gain).connect(audioDestination); }
-    await waitForExportVideo(video); return { clip, video, url, gain, sharedStage:isMobileSafari };
+    if (soundSettings.micVolume === 'on' && clip.micBlob) { micUrl = URL.createObjectURL(clip.micBlob); mic = new Audio(micUrl); mic.preload = 'auto'; micSource = exportAudioContext.createMediaElementSource(mic); micGain = exportAudioContext.createGain(); micSource.connect(micGain).connect(audioDestination); }
+    await waitForExportVideo(video); return { clip, video, url, gain, mic, micUrl, micSource, micGain, sharedStage:isMobileSafari };
   };
   const items = isMobileSafari ? [] : await Promise.all(clips.map(prepareExportItem));
   const transitionDuration = isMobileSafari ? 0 : .35, mobileFadeDuration = 350; let mobileTransitionFrame = null;
   setExportProgress(5);
   for (let index = 0; index < clips.length && !exportJob.cancelled; index += 1) {
     const item = isMobileSafari ? await prepareExportItem(clips[index]) : items[index], next = isMobileSafari ? undefined : items[index + 1]; if (isMobileSafari) items.push(item); let nextStarted = false, frame, mobileFadeStartedAt = 0, playbackStartedAt = performance.now();
-    item.gain.gain.value = 1; if (!item.video.currentTime) await startExportVideo(item.video);
+    item.gain.gain.value = 1; if (item.micGain) item.micGain.gain.value = 1; if (!item.video.currentTime) { await startExportVideo(item.video); if (item.mic) await startExportVideo(item.mic); }
     mobileFadeStartedAt = performance.now();
     await new Promise(resolve => { const render = () => {
       const remaining = Math.max(0, item.video.duration - item.video.currentTime), progress = nextStarted ? Math.min(1, 1 - remaining / transitionDuration) : 0;
       const expectedPlaybackMs = Math.max(3000, (Number.isFinite(item.video.duration) ? item.video.duration * 1000 : 0) + 2000), elapsedProgress = Math.min(1, (performance.now() - playbackStartedAt) / expectedPlaybackMs), clipProgress = Math.max(item.video.currentTime / Math.max(item.video.duration, 1), elapsedProgress);
       setExportProgress(5 + ((index + clipProgress) / clips.length) * 90);
-      if (next && transitionDuration && !nextStarted && remaining <= transitionDuration) { nextStarted = true; next.gain.gain.value = 0; next.video.play().catch(() => {}); }
-      if (nextStarted) { item.gain.gain.value = 1 - progress; next.gain.gain.value = progress; }
+      if (next && transitionDuration && !nextStarted && remaining <= transitionDuration) { nextStarted = true; next.gain.gain.value = 0; if (next.micGain) next.micGain.gain.value = 0; next.video.play().catch(() => {}); next.mic?.play().catch(() => {}); }
+      if (nextStarted) { item.gain.gain.value = 1 - progress; next.gain.gain.value = progress; if (item.micGain) item.micGain.gain.value = 1 - progress; if (next.micGain) next.micGain.gain.value = progress; }
       const mobileFadeProgress = isMobileSafari && mobileTransitionFrame ? Math.min(1, (performance.now() - mobileFadeStartedAt) / mobileFadeDuration) : 1;
       if (isMobileSafari && mobileTransitionFrame && mobileFadeProgress < 1) { context.drawImage(mobileTransitionFrame, 0, 0); drawExportFrame(context, canvas, item.video, item.clip, mobileFadeProgress, false); } else { mobileTransitionFrame = null; drawExportFrame(context, canvas, item.video, item.clip, nextStarted ? 1 - progress : 1, true); }
       if (nextStarted) drawExportFrame(context, canvas, next.video, next.clip, progress, false);
       const clipFinished = item.video.ended || (Number.isFinite(item.video.duration) && item.video.currentTime >= item.video.duration - .04) || (isMobileSafari && performance.now() - playbackStartedAt >= expectedPlaybackMs);
       if (exportJob.cancelled || clipFinished) { cancelAnimationFrame(frame); resolve(); } else frame = requestAnimationFrame(render);
     }; render(); });
-    if (isMobileSafari) { if (index < clips.length - 1) { mobileTransitionFrame = document.createElement('canvas'); mobileTransitionFrame.width = canvas.width; mobileTransitionFrame.height = canvas.height; mobileTransitionFrame.getContext('2d').drawImage(canvas, 0, 0); } URL.revokeObjectURL(item.url); items.pop(); }
+    if (isMobileSafari) { if (index < clips.length - 1) { mobileTransitionFrame = document.createElement('canvas'); mobileTransitionFrame.width = canvas.width; mobileTransitionFrame.height = canvas.height; mobileTransitionFrame.getContext('2d').drawImage(canvas, 0, 0); } item.mic?.pause(); item.micSource?.disconnect(); item.micGain?.disconnect(); if (item.micUrl) URL.revokeObjectURL(item.micUrl); URL.revokeObjectURL(item.url); items.pop(); }
   }
-  items.forEach(item => { item.gain.disconnect(); item.video.remove(); URL.revokeObjectURL(item.url); });
+  items.forEach(item => { item.gain.disconnect(); item.video.remove(); item.mic?.pause(); item.micSource?.disconnect(); item.micGain?.disconnect(); if (item.micUrl) URL.revokeObjectURL(item.micUrl); URL.revokeObjectURL(item.url); });
   if (mobileExportStage) { mobileExportStage.gain.disconnect(); mobileExportStage.video.pause(); mobileExportStage.video.remove(); }
   if (exportJob.cancelled) { await finishRecorder(); await exportAudioContext.close(); exportJob = null; return; }
   setExportProgress(96); $('#exportStatus').textContent = 'Finishing your reel…';
@@ -237,7 +234,8 @@ $('#closeSettings').onclick = () => { $('#settingsSheet').hidden = true; };
 $('#randomSoundPlay').onclick = () => { soundSettings.randomSoundPlay = !soundSettings.randomSoundPlay; persistSoundSettings(); };
 $('#randomSounds').onclick = () => { soundSettings.randomSounds = !soundSettings.randomSounds; persistSoundSettings(); };
 document.querySelectorAll('#fxVolume button').forEach(button => button.onclick = () => { soundSettings.fxVolume = button.dataset.value; persistSoundSettings(); });
-document.querySelectorAll('#micVolume button').forEach(button => button.onclick = () => { soundSettings.micVolume = button.dataset.value; persistSoundSettings(); });
+$('#micOnExport').onclick = () => { soundSettings.micVolume = soundSettings.micVolume === 'on' ? 'off' : 'on'; persistSoundSettings(); };
+$('#deleteRecordings').onclick = deleteAllRecordings;
 renderSoundSettings();
 document.querySelectorAll('.bottom-nav a').forEach(link => link.onclick = async event => { event.preventDefault(); if (link.getAttribute('href') === '#reel') { if (completed.length !== challenges.length) return toast('Capture all three moments to unlock your reel.'); await renderReel(); show('#reel'); } else if (link.getAttribute('href') === '#home') show('#home'); else toast('Settings coming soon'); document.querySelectorAll('.bottom-nav a').forEach(item => item.classList.remove('nav-active')); link.classList.add('nav-active'); });
 refreshCompleted();
