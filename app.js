@@ -103,7 +103,6 @@ async function playReel(startIndex = 0, startTime = 0, autoPlay = true) {
     const clip = clips[index]; setCaption(clip); if (!alreadyPlaying) { currentUrl = await loadVideo(activeVideo, clip); activeVideo.currentTime = initialTime; initialTime = 0; if (autoPlay) await activeVideo.play(); else $('#reelPlayerToggle').textContent = '▶'; }
     let transitionStarted = false, transitionPromise;
     activeVideo.ontimeupdate = () => {
-      const elapsed = clips.slice(0, index).reduce((total, item) => total + (item.duration || 1), 0) + activeVideo.currentTime, progress = Math.min(1000, Math.round(elapsed / reelPlayback.total * 1000)); $('#reelScrubber').value = progress; $('#reelScrubber').style.setProperty('--scrub-progress', `${progress / 10}%`);
       if (isMobileSafari || transitionStarted || index === clips.length - 1 || activeVideo.duration - activeVideo.currentTime > .35) return;
       transitionStarted = true; transitionPromise = (async () => { waitingUrl = await loadVideo(waitingVideo, clips[index + 1]); await waitingVideo.play(); waitingVideo.style.opacity = '1'; activeVideo.style.opacity = '0'; })();
     };
@@ -127,9 +126,9 @@ $('#cancelRecord').onclick = () => { clearTimeout(randomSoundTimer); stream?.get
 $('#recordButton').onclick = () => startTime ? stopRecording() : startRecording(); $('#soundTrigger').onclick = playSound; $('#saveMoment').onclick = saveMoment; $('#redoMoment').onclick = prepareCamera;
 $('#flipCamera').onclick = flipCamera;
 $('#compilationButton').onclick = async () => { await renderReel(); show('#reel'); }; $('#reelPlay').onclick = playReel;
-$('#reelPlayer').onclick = event => { if (event.target === $('#reelScrubber')) return; toggleReelPlayback(); };
+$('#reelPlayer').onclick = event => { if (event.target === $('#reelRewind')) return; toggleReelPlayback(); };
 $('#reelPlayerToggle').onclick = event => { event.stopPropagation(); toggleReelPlayback(); };
-$('#reelScrubber').oninput = event => { event.stopPropagation(); if (!reelPlayback) return; const targetSeconds = event.target.value / 1000 * reelPlayback.total; let elapsed = 0, targetIndex = 0, clipOffset = 0; for (let index = 0; index < reelPlayback.clips.length; index += 1) { const duration = reelPlayback.clips[index].duration || 1; if (targetSeconds <= elapsed + duration || index === reelPlayback.clips.length - 1) { targetIndex = index; clipOffset = targetSeconds - elapsed; break; } elapsed += duration; } event.target.style.setProperty('--scrub-progress', `${event.target.value / 10}%`); if (targetIndex === reelPlayback.index) { reelPlayback.activeVideo.currentTime = Math.max(0, Math.min(reelPlayback.activeVideo.duration || 1, clipOffset)); revealReelControls(); return; } const wasPlaying = !reelPlayback.activeVideo.paused; stopReelPlayback(); playReel(targetIndex, clipOffset, wasPlaying); };
+$('#reelRewind').onclick = event => { event.stopPropagation(); if (!reelPlayback) return; reelPlayback.waitingVideo.pause(); reelPlayback.waitingVideo.style.opacity = '0'; reelPlayback.activeVideo.currentTime = 0; revealReelControls(); };
 $('#cancelExport').onclick = cancelCurrentExport;
 function closeExportSheet() { $('#exportSheet').hidden = true; }
 async function shareReel() {
