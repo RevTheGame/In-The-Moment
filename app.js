@@ -5,7 +5,7 @@ const dailyRandom = (() => { let seed = dateSeed || 1; return () => ((seed = (se
 const dailyShuffle = list => [...list].sort(() => dailyRandom() - .5);
 const challenges = dailyShuffle(['Random', 'Beautiful', 'Funny'].map(vibe => { const matches = challengeCatalog.filter(challenge => challenge.vibe === vibe); return matches[Math.floor(dailyRandom() * matches.length)]; }));
 
-let current = 0, completed = [], stream, recorder, chunks = [], startTime, timerId, lastBlob, lastDuration = 0, reelUrls = [], recordingAudioContext, recordingAudioDestination, microphoneSource, micGain, reelStyle = 'Minimal', cameraFacing = 'environment', reelPlayback, exportJob, reelControlsTimer, randomSoundTimer;
+let current = 0, completed = [], stream, recorder, chunks = [], startTime, timerId, lastBlob, lastDuration = 0, reelUrls = [], cachedReelClips = [], recordingAudioContext, recordingAudioDestination, microphoneSource, micGain, reelStyle = 'Minimal', cameraFacing = 'environment', reelPlayback, exportJob, reelControlsTimer, randomSoundTimer;
 let sessionClips = [];
 const soundBufferCache = new Map();
 let soundSettings = { randomSoundPlay:false, randomSounds:false, fxVolume:'medium', micVolume:'on', ...JSON.parse(localStorage.getItem('itm-sound-settings') || '{}') };
@@ -88,26 +88,36 @@ async function saveMoment() { if (!lastBlob?.size) return toast('No video was ca
 async function renderReel() {
   stopReelPlayback();
   const clips = await getClips(); reelUrls.forEach(URL.revokeObjectURL); reelUrls = [];
+  cachedReelClips = clips.sort((a, b) => a.challenge - b.challenge);
   $('#reelClips').className = `reel-clips reel-style-${reelStyle.toLowerCase().replace(' ', '-')}`;
   $('#reelClips').innerHTML = challenges.map((challenge, index) => { const clip = clips.find(item => item.challenge === index), url = clip?.blob ? URL.createObjectURL(clip.blob) : '', shortTitle = challenge.short || challenge.title, label = reelStyle === 'Bold' ? shortTitle.toUpperCase() : shortTitle; if (url) reelUrls.push(url); return `<div class="reel-clip" style="--card-color:${challenge.color}">${url ? `<video src="${url}" muted playsinline preload="metadata"></video>` : ''}${reelStyle === 'Off' ? '' : `<span>${clip ? label : '—'}</span>`}</div>`; }).join('');
   $('#reelPlayer').hidden = true;
 }
+async function startPreviewVideo(video) { try { await video.play(); } catch (error) { video.muted = true; video.defaultMuted = true; video.setAttribute('muted', ''); await video.play().catch(() => toast('Video playback is unavailable in this browser.')); } }
+function playMobileSafariReel(clips) {
+  const player = $('#reelPlayer'), video = $('#reelVideo'), waitingVideo = $('#reelVideoNext'), caption = $('#reelPlayerCaption'); let index = 0, currentUrl;
+  player.hidden = false; player.className = `reel-player reel-style-${reelStyle.toLowerCase()}`; video.style.opacity = '1'; waitingVideo.style.opacity = '0'; video.muted = true; video.defaultMuted = true; video.setAttribute('muted', '');
+  reelPlayback = { clips, index, activeVideo:video, waitingVideo, total:clips.reduce((total, clip) => total + (clip.duration || 1), 0) }; $('#reelPlayerToggle').textContent = 'Ⅱ'; revealReelControls();
+  const playIndex = () => { const clip = clips[index]; caption.innerHTML = reelStyle === 'Off' ? '' : `<span class="caption-title">${reelStyle === 'Bold' ? challenges[clip.challenge].title.toUpperCase() : challenges[clip.challenge].title}</span><span class="caption-time">${formatTimestamp(clip.capturedAt)}</span>`; if (currentUrl) URL.revokeObjectURL(currentUrl); currentUrl = URL.createObjectURL(clip.blob); video.src = currentUrl; video.load(); video.play().catch(() => { $('#reelPlayerToggle').textContent = '▶'; toast('Tap the play control to start the reel.'); }); video.onended = () => { if (index === clips.length - 1) { player.hidden = true; reelPlayback = null; return; } index += 1; reelPlayback.index = index; playIndex(); }; };
+  playIndex();
+}
 async function playReel(startIndex = 0, startTime = 0, autoPlay = true) {
-  const clips = (await getClips()).sort((a, b) => a.challenge - b.challenge); if (!clips.length) return toast('Record a moment first.');
+  const clips = cachedReelClips.length ? cachedReelClips : (await getClips()).sort((a, b) => a.challenge - b.challenge); if (!clips.length) return toast('Record a moment first.');
+  if (isMobileSafari) return playMobileSafariReel(clips);
   const player = $('#reelPlayer'), caption = $('#reelPlayerCaption'); let activeVideo = $('#reelVideo'), waitingVideo = $('#reelVideoNext'), index = startIndex, currentUrl, waitingUrl, initialTime = startTime;
   player.hidden = false; player.className = `reel-player reel-style-${reelStyle.toLowerCase()}`; activeVideo.style.opacity = '1'; waitingVideo.style.opacity = '0';
   reelPlayback = { clips, index, activeVideo, waitingVideo, total: clips.reduce((total, clip) => total + (clip.duration || 1), 0) }; $('#reelPlayerToggle').textContent = 'Ⅱ'; revealReelControls();
   const setCaption = clip => { caption.innerHTML = reelStyle === 'Off' ? '' : `<span class="caption-title">${reelStyle === 'Bold' ? challenges[clip.challenge].title.toUpperCase() : challenges[clip.challenge].title}</span><span class="caption-time">${formatTimestamp(clip.capturedAt)}</span>`; };
   const loadVideo = (video, clip) => new Promise((resolve, reject) => { const url = URL.createObjectURL(clip.blob); video.src = url; video.onloadeddata = () => resolve(url); video.onerror = reject; });
   async function playClip(alreadyPlaying = false) {
-    const clip = clips[index]; setCaption(clip); if (!alreadyPlaying) { currentUrl = await loadVideo(activeVideo, clip); activeVideo.currentTime = initialTime; initialTime = 0; if (autoPlay) await activeVideo.play(); else $('#reelPlayerToggle').textContent = '▶'; }
+    const clip = clips[index]; setCaption(clip); if (!alreadyPlaying) { currentUrl = await loadVideo(activeVideo, clip); activeVideo.currentTime = initialTime; initialTime = 0; if (autoPlay) await startPreviewVideo(activeVideo); else $('#reelPlayerToggle').textContent = '▶'; }
     let transitionStarted = false, transitionPromise;
     activeVideo.ontimeupdate = () => {
       if (isMobileSafari || transitionStarted || index === clips.length - 1 || activeVideo.duration - activeVideo.currentTime > .35) return;
-      transitionStarted = true; transitionPromise = (async () => { waitingUrl = await loadVideo(waitingVideo, clips[index + 1]); await waitingVideo.play(); waitingVideo.style.opacity = '1'; activeVideo.style.opacity = '0'; })();
+      transitionStarted = true; transitionPromise = (async () => { waitingUrl = await loadVideo(waitingVideo, clips[index + 1]); await startPreviewVideo(waitingVideo); waitingVideo.style.opacity = '1'; activeVideo.style.opacity = '0'; })();
     };
     activeVideo.onended = async () => {
-      if (!transitionPromise && index < clips.length - 1) { transitionStarted = true; transitionPromise = (async () => { waitingUrl = await loadVideo(waitingVideo, clips[index + 1]); await waitingVideo.play(); })(); }
+      if (!transitionPromise && index < clips.length - 1) { transitionStarted = true; transitionPromise = (async () => { waitingUrl = await loadVideo(waitingVideo, clips[index + 1]); await startPreviewVideo(waitingVideo); })(); }
       if (transitionPromise) await transitionPromise;
       URL.revokeObjectURL(currentUrl); if (index === clips.length - 1) { player.hidden = true; reelPlayback = null; return; }
       index += 1; const previousVideo = activeVideo; activeVideo = waitingVideo; waitingVideo = previousVideo; currentUrl = waitingUrl; activeVideo.style.opacity = '1'; waitingVideo.style.opacity = '0'; await playClip(transitionStarted);
@@ -119,13 +129,13 @@ async function playReel(startIndex = 0, startTime = 0, autoPlay = true) {
 function revealReelControls() { const player = $('#reelPlayer'); clearTimeout(reelControlsTimer); player.classList.add('show-controls'); reelControlsTimer = setTimeout(() => { if (reelPlayback && !reelPlayback.activeVideo.paused) player.classList.remove('show-controls'); }, 1400); }
 function stopReelPlayback() { if (!reelPlayback) return; clearTimeout(reelControlsTimer); reelPlayback.activeVideo.pause(); reelPlayback.waitingVideo.pause(); $('#reelPlayer').hidden = true; $('#reelPlayer').classList.remove('show-controls'); $('#reelPlayerToggle').textContent = '▶'; reelPlayback = null; }
 function pauseReelPlayback() { if (!reelPlayback) return; reelPlayback.activeVideo.pause(); reelPlayback.waitingVideo.pause(); $('#reelPlayerToggle').textContent = '▶'; revealReelControls(); }
-function toggleReelPlayback() { if (!reelPlayback) return playReel(); const activeVideo = reelPlayback.activeVideo, paused = activeVideo.paused; if (paused) { activeVideo.play().catch(() => toast('Tap play again to continue the reel.')); if (reelPlayback.waitingVideo.src && reelPlayback.waitingVideo.style.opacity === '1') reelPlayback.waitingVideo.play().catch(() => {}); } else { activeVideo.pause(); reelPlayback.waitingVideo.pause(); } $('#reelPlayerToggle').textContent = paused ? 'Ⅱ' : '▶'; revealReelControls(); }
+function toggleReelPlayback() { if (!reelPlayback) return playReel(); const activeVideo = reelPlayback.activeVideo, paused = activeVideo.paused; if (paused) { startPreviewVideo(activeVideo); if (reelPlayback.waitingVideo.src && reelPlayback.waitingVideo.style.opacity === '1') startPreviewVideo(reelPlayback.waitingVideo); } else { activeVideo.pause(); reelPlayback.waitingVideo.pause(); } $('#reelPlayerToggle').textContent = paused ? 'Ⅱ' : '▶'; revealReelControls(); }
 
 $('#startMoment').onclick = prepareCamera; $('#backButton').onclick = () => show('#home');
 $('#cancelRecord').onclick = () => { clearTimeout(randomSoundTimer); stream?.getTracks().forEach(track => track.stop()); stream = null; recordingAudioContext?.close(); recordingAudioContext = recordingAudioDestination = microphoneSource = micGain = null; show('#challenge'); };
 $('#recordButton').onclick = () => startTime ? stopRecording() : startRecording(); $('#soundTrigger').onclick = playSound; $('#saveMoment').onclick = saveMoment; $('#redoMoment').onclick = prepareCamera;
 $('#flipCamera').onclick = flipCamera;
-$('#compilationButton').onclick = async () => { await renderReel(); show('#reel'); }; $('#reelPlay').onclick = playReel;
+$('#compilationButton').onclick = async () => { await renderReel(); show('#reel'); }; $('#reelPlay').onclick = () => playReel();
 $('#reelPlayer').onclick = event => { if (event.target === $('#reelRewind')) return; toggleReelPlayback(); };
 $('#reelPlayerToggle').onclick = event => { event.stopPropagation(); toggleReelPlayback(); };
 $('#reelRewind').onclick = event => { event.stopPropagation(); if (!reelPlayback) return; reelPlayback.waitingVideo.pause(); reelPlayback.waitingVideo.style.opacity = '0'; reelPlayback.activeVideo.currentTime = 0; revealReelControls(); };
