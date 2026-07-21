@@ -186,7 +186,7 @@ async function exportVerticalReel() {
   const transitionDuration = isMobileSafari ? 0 : .35, mobileFadeDuration = 350; let mobileTransitionFrame = null;
   setExportProgress(5);
   for (let index = 0; index < clips.length && !exportJob.cancelled; index += 1) {
-    const item = isMobileSafari ? await prepareExportItem(clips[index]) : items[index], next = isMobileSafari ? undefined : items[index + 1]; if (isMobileSafari) items.push(item); let nextStarted = false, frame, mobileFadeStartedAt = performance.now();
+    const item = isMobileSafari ? await prepareExportItem(clips[index]) : items[index], next = isMobileSafari ? undefined : items[index + 1]; if (isMobileSafari) items.push(item); let nextStarted = false, frame, mobileFadeStartedAt = performance.now(), playbackStartedAt = performance.now();
     item.gain.gain.value = 1; if (!item.video.currentTime) await item.video.play();
     await new Promise(resolve => { const render = () => {
       const remaining = Math.max(0, item.video.duration - item.video.currentTime), progress = nextStarted ? Math.min(1, 1 - remaining / transitionDuration) : 0;
@@ -196,13 +196,15 @@ async function exportVerticalReel() {
       const mobileFadeProgress = isMobileSafari && mobileTransitionFrame ? Math.min(1, (performance.now() - mobileFadeStartedAt) / mobileFadeDuration) : 1;
       if (isMobileSafari && mobileTransitionFrame && mobileFadeProgress < 1) { context.drawImage(mobileTransitionFrame, 0, 0); drawExportFrame(context, canvas, item.video, item.clip, mobileFadeProgress, false); } else { mobileTransitionFrame = null; drawExportFrame(context, canvas, item.video, item.clip, nextStarted ? 1 - progress : 1, true); }
       if (nextStarted) drawExportFrame(context, canvas, next.video, next.clip, progress, false);
-      const clipFinished = item.video.ended || (Number.isFinite(item.video.duration) && item.video.currentTime >= item.video.duration - .04);
+      const expectedPlaybackMs = Math.max(3000, (Number.isFinite(item.video.duration) ? item.video.duration * 1000 : 0) + 2000);
+      const clipFinished = item.video.ended || (Number.isFinite(item.video.duration) && item.video.currentTime >= item.video.duration - .04) || (isMobileSafari && performance.now() - playbackStartedAt >= expectedPlaybackMs);
       if (exportJob.cancelled || clipFinished) { cancelAnimationFrame(frame); resolve(); } else frame = requestAnimationFrame(render);
     }; render(); });
     if (isMobileSafari) { if (index < clips.length - 1) { mobileTransitionFrame = document.createElement('canvas'); mobileTransitionFrame.width = canvas.width; mobileTransitionFrame.height = canvas.height; mobileTransitionFrame.getContext('2d').drawImage(canvas, 0, 0); } item.gain.disconnect(); item.video.remove(); URL.revokeObjectURL(item.url); items.pop(); }
   }
   items.forEach(item => { item.gain.disconnect(); item.video.remove(); URL.revokeObjectURL(item.url); });
   if (exportJob.cancelled) { await finishRecorder(); await exportAudioContext.close(); exportJob = null; return; }
+  setExportProgress(96); $('#exportStatus').textContent = 'Finishing your reel…';
   const reel = await finishRecorder(); await exportAudioContext.close();
   const extension = reel.type.includes('mp4') ? 'mp4' : 'webm', link = document.createElement('a'); link.href = URL.createObjectURL(reel); link.download = `in-the-moment-reel.${extension}`; link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   setExportProgress(100); $('#exportStatus').textContent = extension === 'mp4' ? 'Your 9:16 MP4 reel is ready.' : 'Your 9:16 reel is ready (this browser exported WebM).'; exportJob = null; setExporting(false); show('#reel'); toast(extension === 'mp4' ? 'MP4 reel downloaded.' : 'Vertical reel downloaded.');
