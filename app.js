@@ -9,7 +9,7 @@ let current = 0, completed = [], stream, recorder, startTime, timerId, lastBlob,
 let sessionClips = [];
 const soundDataCache = new Map();
 let safariReelAudioContext;
-let soundSettings = { randomSoundPlay:false, randomSounds:false, fxVolume:'medium', micVolume:'on', ...JSON.parse(localStorage.getItem('itm-sound-settings') || '{}') };
+let soundSettings = { randomSoundPlay:false, randomSounds:false, showChallenge:false, fxVolume:'medium', micVolume:'on', ...JSON.parse(localStorage.getItem('itm-sound-settings') || '{}') };
 let themeMode = localStorage.getItem('itm-theme') === 'dark' ? 'dark' : 'light';
 const $ = selector => document.querySelector(selector);
 // Keep the compatibility exporter strictly scoped to Safari. Android and the
@@ -63,7 +63,7 @@ function renderChallenges() {
 }
 function openChallenge(index) { current = index; const challenge = challenges[index]; $('#orbEmoji').textContent = challenge.icon; $('#soundOrb').style.background = challenge.color; $('#challengeNumber').textContent = `MOMENT 0${index + 1}`; $('#challengeTitle').textContent = challenge.title; $('#challengePrompt').textContent = challenge.prompt; show('#challenge'); }
 function persistSoundSettings() { localStorage.setItem('itm-sound-settings', JSON.stringify(soundSettings)); renderSoundSettings(); }
-function renderSoundSettings() { $('#randomSoundPlay').classList.toggle('active', soundSettings.randomSoundPlay); $('#randomSoundPlay').setAttribute('aria-pressed', String(soundSettings.randomSoundPlay)); $('#randomSounds').classList.toggle('active', soundSettings.randomSounds); $('#randomSounds').setAttribute('aria-pressed', String(soundSettings.randomSounds)); $('#micOnExport').classList.toggle('active', soundSettings.micVolume === 'on'); $('#micOnExport').setAttribute('aria-pressed', String(soundSettings.micVolume === 'on')); document.querySelectorAll('#fxVolume button').forEach(button => button.classList.toggle('active', button.dataset.value === soundSettings.fxVolume)); }
+function renderSoundSettings() { $('#randomSoundPlay').classList.toggle('active', soundSettings.randomSoundPlay); $('#randomSoundPlay').setAttribute('aria-pressed', String(soundSettings.randomSoundPlay)); $('#randomSounds').classList.toggle('active', soundSettings.randomSounds); $('#randomSounds').setAttribute('aria-pressed', String(soundSettings.randomSounds)); $('#showChallenge').classList.toggle('active', soundSettings.showChallenge); $('#showChallenge').setAttribute('aria-pressed', String(soundSettings.showChallenge)); $('#micOnExport').classList.toggle('active', soundSettings.micVolume === 'on'); $('#micOnExport').setAttribute('aria-pressed', String(soundSettings.micVolume === 'on')); document.querySelectorAll('#fxVolume button').forEach(button => button.classList.toggle('active', button.dataset.value === soundSettings.fxVolume)); }
 function soundForPlayback() { if (!soundSettings.randomSounds) return challenges[current]; const key = `itm-used-sounds-${today}`, used = JSON.parse(localStorage.getItem(key) || '[]'), available = challengeCatalog.filter(challenge => !used.includes(challenge.soundPath)), choice = available[Math.floor(Math.random() * available.length)] || challengeCatalog[Math.floor(Math.random() * challengeCatalog.length)]; localStorage.setItem(key, JSON.stringify([...used, choice.soundPath])); return choice; }
 function createVideoRecorder(mediaStream) {
   // Capture with the browser's own muxer rather than forcing a codec profile.
@@ -317,7 +317,8 @@ function playSequentialReel(clips, startIndex = 0) {
     if (!clip?.blob) return;
     activeClip = clip;
     const version = ++sourceVersion;
-    caption.innerHTML = reelStyle === 'Off' ? '' : `<span class="caption-title">${reelStyle === 'Bold' ? challenges[clip.challenge].title.toUpperCase() : challenges[clip.challenge].title}</span><span class="caption-time">${formatTimestamp(clip.capturedAt)}</span>`;
+    const challenge = challenges[clip.challenge];
+    caption.innerHTML = reelStyle === 'Off' ? '' : `<span class="caption-title">${reelStyle === 'Bold' ? challenge.title.toUpperCase() : challenge.title}</span><span class="caption-time">${formatTimestamp(clip.capturedAt)}</span>${soundSettings.showChallenge ? `<span class="caption-challenge">${challenge.prompt}</span>` : ''}`;
     pauseAudio(); stopMic(); clearVideo(video); video.style.opacity = '0'; video.playbackRate = video.defaultPlaybackRate = 1;
     if (currentUrl) URL.revokeObjectURL(currentUrl);
     currentUrl = URL.createObjectURL(clip.blob);
@@ -360,26 +361,26 @@ $('#startMoment').onclick = prepareCamera; $('#backButton').onclick = () => show
 $('#cancelRecord').onclick = () => { recordingSession += 1; recordingStopping = false; clearInterval(timerId); if (recorder?.state === 'recording') recorder.stop(); recorder = null; releaseRecordingResources(); $('#recordButton').disabled = false; $('#recordButton').classList.remove('is-recording'); $('#recordLabel').textContent = 'TAP TO RECORD'; show('#challenge'); };
 const toggleRecordButton = () => { if (Date.now() < recordButtonLockedUntil) return; startTime ? stopRecording() : startRecording(); };
 const recordButton = $('#recordButton');
-const recordScreen = $('#record');
 let lastRecordActivation = 0, lastFlipActivation = 0;
-const isRecordButtonPoint = event => {
-  const bounds = recordButton.getBoundingClientRect();
-  return event.clientX >= bounds.left && event.clientX <= bounds.right && event.clientY >= bounds.top && event.clientY <= bounds.bottom;
-};
 const activateRecordButton = event => {
   if (recordButton.disabled || (event.button !== undefined && event.button !== 0)) return;
   const now = performance.now();
-  if (now - lastRecordActivation < 350) return;
+  if (now - lastRecordActivation < 550) return;
   lastRecordActivation = now;
   toggleRecordButton();
 };
-const handleRecordSurfacePress = event => {
-  if (event.target === recordButton || isRecordButtonPoint(event)) activateRecordButton(event);
+const startRecordPress = event => {
+  // Own the touch on the native button itself. This avoids Android sending a
+  // center press through the camera surface before the synthetic click arrives.
+  if (event.pointerType === 'mouse' && event.button !== 0) return;
+  event.preventDefault();
+  activateRecordButton(event);
 };
-recordScreen.addEventListener('pointerup', handleRecordSurfacePress);
-recordScreen.addEventListener('click', handleRecordSurfacePress);
+recordButton.addEventListener('pointerdown', startRecordPress, { passive:false });
 recordButton.addEventListener('click', event => {
-  if (event.detail === 0) activateRecordButton(event);
+  // Keyboard activation (and older browsers without Pointer Events) arrives
+  // as a click. Pointer taps are already handled above and are de-duplicated.
+  if (event.detail === 0 || performance.now() - lastRecordActivation >= 550) activateRecordButton(event);
 });
 $('#soundTrigger').onclick = playSound;
 const activateFlipCamera = event => {
@@ -407,13 +408,48 @@ function formatTimestamp(dateString) { return new Date(dateString).toLocaleTimeS
 function setExporting(isExporting) { document.querySelectorAll('.style-pill').forEach(button => button.disabled = isExporting); }
 function setExportProgress(value) { const percent = Math.round(value); $('#exportProgress').style.width = `${percent}%`; $('#exportPercent').textContent = `${percent}%`; }
 function cancelCurrentExport() { if (!exportJob) return; exportJob.cancelled = true; if (exportJob.recorder?.state === 'recording') exportJob.recorder.stop(); $('#exportStatus').textContent = 'Export cancelled.'; setExporting(false); show('#reel'); toast('Export cancelled.'); }
+function funRainbowGradient(context, width) {
+  const gradient = context.createLinearGradient(width * .12, 0, width * .88, 0);
+  gradient.addColorStop(0, '#ff5d8f'); gradient.addColorStop(.2, '#ff9e45'); gradient.addColorStop(.4, '#f5dd4f'); gradient.addColorStop(.6, '#58d990'); gradient.addColorStop(.8, '#52b5ff'); gradient.addColorStop(1, '#b07cff');
+  return gradient;
+}
+function drawCenteredCanvasLines(context, text, x, y, maxWidth, lineHeight) {
+  const words = text.trim().split(/\s+/), lines = []; let line = '';
+  words.forEach(word => {
+    const candidate = line ? `${line} ${word}` : word;
+    if (line && context.measureText(candidate).width > maxWidth) { lines.push(line); line = word; } else line = candidate;
+  });
+  if (line) lines.push(line);
+  lines.forEach((lineText, index) => context.fillText(lineText, x, y + index * lineHeight));
+  return y + lines.length * lineHeight;
+}
 function drawExportFrame(context, canvas, video, clip, opacity = 1, clear = true) {
   const width = canvas.width, height = canvas.height, videoWidth = video.videoWidth || 9, videoHeight = video.videoHeight || 16;
   const scale = Math.max(width / videoWidth, height / videoHeight), drawnWidth = videoWidth * scale, drawnHeight = videoHeight * scale;
   if (clear) { context.fillStyle = '#171716'; context.fillRect(0, 0, width, height); }
   context.save(); context.globalAlpha = opacity; context.drawImage(video, (width - drawnWidth) / 2, (height - drawnHeight) / 2, drawnWidth, drawnHeight);
   const gradient = context.createLinearGradient(0, height * .58, 0, height); gradient.addColorStop(0, 'transparent'); gradient.addColorStop(1, 'rgba(0,0,0,.8)'); context.fillStyle = gradient; context.fillRect(0, 0, width, height);
-  if (reelStyle !== 'Off') { context.textAlign = 'center'; if (reelStyle === 'Bold') { context.font = '52px "Archivo Black"'; context.lineWidth = 2; context.strokeStyle = '#76283f'; context.strokeText(challenges[clip.challenge].title.toUpperCase(), width / 2, 118); context.fillStyle = '#fff'; context.fillText(challenges[clip.challenge].title.toUpperCase(), width / 2, 118); context.font = 'italic 29px Georgia'; context.fillStyle = '#fff'; context.fillText(formatTimestamp(clip.capturedAt), width / 2, 160); } else { context.fillStyle = '#fff'; context.font = '600 42px Georgia'; context.fillText(challenges[clip.challenge].title, width / 2, 118); context.font = '24px monospace'; context.fillStyle = '#f7cb43'; context.fillText(formatTimestamp(clip.capturedAt).toUpperCase(), width / 2, 158); } context.textAlign = 'start'; }
+  if (reelStyle !== 'Off') {
+    const challenge = challenges[clip.challenge]; let descriptionTop;
+    context.textAlign = 'center'; context.shadowColor = 'rgba(0,0,0,.62)'; context.shadowBlur = 5;
+    if (reelStyle === 'Bold') {
+      context.font = '52px "Archivo Black"'; context.lineWidth = 2; context.strokeStyle = '#76283f'; context.strokeText(challenge.title.toUpperCase(), width / 2, 118); context.fillStyle = '#fff'; context.fillText(challenge.title.toUpperCase(), width / 2, 118);
+      context.font = 'italic 29px Georgia'; context.fillStyle = '#fff'; context.fillText(formatTimestamp(clip.capturedAt), width / 2, 160); descriptionTop = 200;
+    } else if (reelStyle === 'Fun') {
+      context.shadowColor = 'transparent'; context.shadowBlur = 0;
+      context.font = '800 53px "Baloo 2"'; context.fillStyle = funRainbowGradient(context, width); context.fillText(challenge.title, width / 2, 118);
+      context.font = '700 25px "Baloo 2"'; context.fillStyle = funRainbowGradient(context, width); context.fillText(formatTimestamp(clip.capturedAt).toUpperCase(), width / 2, 160); descriptionTop = 200;
+    } else {
+      context.fillStyle = '#fff'; context.font = '600 42px Georgia'; context.fillText(challenge.title, width / 2, 118);
+      context.font = '24px monospace'; context.fillStyle = '#f7cb43'; context.fillText(formatTimestamp(clip.capturedAt).toUpperCase(), width / 2, 158); descriptionTop = 196;
+    }
+    if (soundSettings.showChallenge) {
+      context.font = reelStyle === 'Fun' ? '700 23px "Baloo 2"' : '600 21px "DM Sans"';
+      context.fillStyle = reelStyle === 'Fun' ? funRainbowGradient(context, width) : '#fff';
+      drawCenteredCanvasLines(context, challenge.prompt, width / 2, descriptionTop, width - 76, reelStyle === 'Fun' ? 28 : 27);
+    }
+    context.shadowColor = 'transparent'; context.shadowBlur = 0; context.textAlign = 'start';
+  }
   context.restore();
 }
 async function exportVerticalReel() {
@@ -434,7 +470,7 @@ async function exportVerticalReel() {
     gain.connect(audioDestination);
     if (useSafariExportWorkaround) gain.connect(exportAudioContext.destination);
   };
-  await document.fonts?.load('52px "Archivo Black"');
+  await Promise.all([document.fonts?.load('52px "Archivo Black"'), document.fonts?.load('800 53px "Baloo 2"')]);
   await resumeExportAudio;
   const candidates = ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm'];
   const mimeType = candidates.find(type => MediaRecorder.isTypeSupported(type)) || '';
@@ -568,6 +604,7 @@ $('#settingsButton').onclick = () => { renderSoundSettings(); $('#settingsSheet'
 $('#closeSettings').onclick = () => { $('#settingsSheet').hidden = true; };
 $('#randomSoundPlay').onclick = () => { soundSettings.randomSoundPlay = !soundSettings.randomSoundPlay; persistSoundSettings(); };
 $('#randomSounds').onclick = () => { soundSettings.randomSounds = !soundSettings.randomSounds; persistSoundSettings(); };
+$('#showChallenge').onclick = () => { soundSettings.showChallenge = !soundSettings.showChallenge; persistSoundSettings(); };
 document.querySelectorAll('#fxVolume button').forEach(button => button.onclick = () => { soundSettings.fxVolume = button.dataset.value; persistSoundSettings(); });
 $('#micOnExport').onclick = () => { soundSettings.micVolume = soundSettings.micVolume === 'on' ? 'off' : 'on'; persistSoundSettings(); reelPlayback?.syncMic?.(); };
 $('#deleteRecordings').onclick = deleteAllRecordings;
